@@ -152,6 +152,11 @@ const names = (() => {
 function findBinary(startDir) {
   let current = startDir
   for (;;) {
+    for (const name of names) {
+      const local = path.join(current, "dist", name, "bin", binary)
+      if (fs.existsSync(local)) return local
+    }
+
     const modules = path.join(current, "node_modules")
     if (fs.existsSync(modules)) {
       for (const name of names) {

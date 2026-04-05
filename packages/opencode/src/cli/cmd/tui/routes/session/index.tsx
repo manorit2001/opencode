@@ -1459,8 +1459,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
               streaming={true}
               content={props.part.text.trim()}
               conceal={ctx.conceal()}
-              fg={theme.markdownText}
-              bg={theme.background}
+              style={{ fg: theme.markdownText, bg: theme.background }}
             />
           </Match>
           <Match when={!Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>

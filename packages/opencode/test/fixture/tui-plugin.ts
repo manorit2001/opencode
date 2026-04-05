@@ -1,5 +1,5 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import { RGBA, type CliRenderer } from "@opentui/core"
+import { CliRenderer, RGBA } from "@opentui/core"
 import { createPluginKeybind } from "../../src/cli/cmd/tui/context/plugin-keybinds"
 import type { HostPluginApi } from "../../src/cli/cmd/tui/plugin/slots"
 
@@ -147,12 +147,13 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
       selected = name
       return true
     })
-  const renderer: CliRenderer = opts.renderer ?? {
-    ...Object.create(null),
-    once(this: CliRenderer) {
-      return this
-    },
-  }
+  const renderer: HostPluginApi["renderer"] =
+    opts.renderer ??
+    Object.assign(Object.create(CliRenderer.prototype), {
+      once(this: HostPluginApi["renderer"]) {
+        return this
+      },
+    })
 
   function kvGet(name: string): unknown
   function kvGet<Value>(name: string, fallback: Value): Value

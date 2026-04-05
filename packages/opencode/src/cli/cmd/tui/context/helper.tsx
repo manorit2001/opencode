@@ -1,4 +1,4 @@
-import { createContext, Show, useContext, type ParentProps } from "solid-js"
+import { createContext, Show, useContext, type JSX, type ParentProps } from "solid-js"
 
 export function createSimpleContext<T, Props extends Record<string, any>>(input: {
   name: string
@@ -7,13 +7,16 @@ export function createSimpleContext<T, Props extends Record<string, any>>(input:
   const ctx = createContext<T>()
 
   return {
-    provider: (props: ParentProps<Props>) => {
+    provider: (props: ParentProps<Props & { gate?: boolean; fallback?: JSX.Element }>) => {
       const init = input.init(props)
+      const state = init as { ready?: boolean }
+      const gate = props.gate ?? state.ready !== undefined
       return (
-        // @ts-expect-error
-        <Show when={init.ready === undefined || init.ready === true}>
-          <ctx.Provider value={init}>{props.children}</ctx.Provider>
-        </Show>
+        <ctx.Provider value={init}>
+          <Show when={!gate || state.ready === undefined || state.ready === true} fallback={props.fallback}>
+            {props.children}
+          </Show>
+        </ctx.Provider>
       )
     },
     use() {

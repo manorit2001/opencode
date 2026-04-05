@@ -17,6 +17,8 @@ import type {
   ProviderListResponse,
   ProviderAuthMethod,
   VcsInfo,
+  Path,
+  Workspace,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "@tui/context/project"
@@ -77,6 +79,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
+      path: Path
+      workspaceList: Workspace[]
+      boot: {
+        done: number
+        total: number
+        pending: string[]
+      }
     }>({
       provider_next: {
         all: [],
@@ -104,6 +113,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       mcp_resource: {},
       formatter: [],
       vcs: undefined,
+      path: { home: "", state: "", config: "", worktree: "", directory: "" },
+      workspaceList: [],
+      boot: {
+        done: 0,
+        total: 0,
+        pending: [],
+      },
     })
 
     const event = useEvent()
@@ -138,7 +154,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
           if (!requests) break
-          const match = Binary.search(requests, event.properties.requestID, (r) => r.id)
+          const match = Binary.search(requests, event.properties.requestID, (r: PermissionRequest) => r.id)
           if (!match.found) break
           setStore(
             "permission",
@@ -157,7 +173,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("permission", request.sessionID, [request])
             break
           }
-          const match = Binary.search(requests, request.id, (r) => r.id)
+          const match = Binary.search(requests, request.id, (r: PermissionRequest) => r.id)
           if (match.found) {
             setStore("permission", request.sessionID, match.index, reconcile(request))
             break
@@ -176,7 +192,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "question.rejected": {
           const requests = store.question[event.properties.sessionID]
           if (!requests) break
-          const match = Binary.search(requests, event.properties.requestID, (r) => r.id)
+          const match = Binary.search(requests, event.properties.requestID, (r: QuestionRequest) => r.id)
           if (!match.found) break
           setStore(
             "question",
@@ -195,7 +211,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("question", request.sessionID, [request])
             break
           }
-          const match = Binary.search(requests, request.id, (r) => r.id)
+          const match = Binary.search(requests, request.id, (r: QuestionRequest) => r.id)
           if (match.found) {
             setStore("question", request.sessionID, match.index, reconcile(request))
             break
@@ -219,7 +235,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
 
         case "session.deleted": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
+          const result = Binary.search(store.session, event.properties.info.id, (s: Session) => s.id)
           if (result.found) {
             setStore(
               "session",
@@ -231,7 +247,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
         case "session.updated": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
+          const result = Binary.search(store.session, event.properties.info.id, (s: Session) => s.id)
           if (result.found) {
             setStore("session", result.index, reconcile(event.properties.info))
             break
@@ -256,7 +272,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("message", event.properties.info.sessionID, [event.properties.info])
             break
           }
-          const result = Binary.search(messages, event.properties.info.id, (m) => m.id)
+          const result = Binary.search(messages, event.properties.info.id, (m: Message) => m.id)
           if (result.found) {
             setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
             break
@@ -291,7 +307,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
         case "message.removed": {
           const messages = store.message[event.properties.sessionID]
-          const result = Binary.search(messages, event.properties.messageID, (m) => m.id)
+          const result = Binary.search(messages, event.properties.messageID, (m: Message) => m.id)
           if (result.found) {
             setStore(
               "message",
@@ -309,7 +325,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("part", event.properties.part.messageID, [event.properties.part])
             break
           }
-          const result = Binary.search(parts, event.properties.part.id, (p) => p.id)
+          const result = Binary.search(parts, event.properties.part.id, (p: Part) => p.id)
           if (result.found) {
             setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
             break
@@ -327,7 +343,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "message.part.delta": {
           const parts = store.part[event.properties.messageID]
           if (!parts) break
-          const result = Binary.search(parts, event.properties.partID, (p) => p.id)
+          const result = Binary.search(parts, event.properties.partID, (p: Part) => p.id)
           if (!result.found) break
           setStore(
             "part",
@@ -344,7 +360,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "message.part.removed": {
           const parts = store.part[event.properties.messageID]
-          const result = Binary.search(parts, event.properties.partID, (p) => p.id)
+          const result = Binary.search(parts, event.properties.partID, (p: Part) => p.id)
           if (result.found)
             setStore(
               "part",
@@ -391,17 +407,37 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         .catch(() => emptyConsoleState)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
-      const blockingRequests: Promise<unknown>[] = [
-        providersPromise,
-        providerListPromise,
-        agentsPromise,
-        configPromise,
-        projectPromise,
-        ...(args.continue ? [sessionListPromise] : []),
+      const blocking: { label: string; task: Promise<unknown> }[] = [
+        { label: "Syncing project", task: projectPromise },
+        { label: "Loading providers", task: providersPromise },
+        { label: "Loading models", task: providerListPromise },
+        { label: "Loading console", task: consoleStatePromise },
+        { label: "Loading agents", task: agentsPromise },
+        { label: "Loading config", task: configPromise },
+        ...(args.continue ? [{ label: "Loading sessions", task: sessionListPromise }] : []),
       ]
+      const finish = <T,>(label: string, task: Promise<T>) =>
+        task.finally(() => {
+          if (store.status !== "loading") return
+          setStore(
+            "boot",
+            produce((draft) => {
+              draft.done = Math.min(draft.total, draft.done + 1)
+              draft.pending = draft.pending.filter((item) => item !== label)
+            }),
+          )
+        })
 
-      await Promise.all(blockingRequests)
-        .then(async () => {
+      if (store.status === "loading") {
+        setStore("boot", {
+          done: 0,
+          total: blocking.length,
+          pending: blocking.map((item) => item.label),
+        })
+      }
+
+      await Promise.all(blocking.map((item) => finish(item.label, item.task)))
+        .then(() => {
           const providersResponse = providersPromise.then((x) => x.data!)
           const providerListResponse = providerListPromise.then((x) => x.data!)
           const consoleStateResponse = consoleStatePromise
@@ -489,9 +525,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       get path() {
         return project.instance.path()
       },
+      get boot() {
+        return store.boot
+      },
       session: {
         get(sessionID: string) {
-          const match = Binary.search(store.session, sessionID, (s) => s.id)
+          const match = Binary.search(store.session, sessionID, (s: Session) => s.id)
           if (match.found) return store.session[match.index]
           return undefined
         },
@@ -522,7 +561,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           ])
           setStore(
             produce((draft) => {
-              const match = Binary.search(draft.session, sessionID, (s) => s.id)
+              const match = Binary.search(draft.session, sessionID, (s: Session) => s.id)
               if (match.found) draft.session[match.index] = session.data!
               if (!match.found) draft.session.splice(match.index, 0, session.data!)
               draft.todo[sessionID] = todo.data ?? []

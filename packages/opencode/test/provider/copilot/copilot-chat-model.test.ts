@@ -1,6 +1,5 @@
 import { OpenAICompatibleChatLanguageModel } from "@/provider/sdk/copilot/chat/openai-compatible-chat-language-model"
 import { describe, test, expect, mock } from "bun:test"
-import type { LanguageModelV3Prompt } from "@ai-sdk/provider"
 
 async function convertReadableStreamToArray<T>(stream: ReadableStream<T>): Promise<T[]> {
   const reader = stream.getReader()
@@ -13,7 +12,9 @@ async function convertReadableStreamToArray<T>(stream: ReadableStream<T>): Promi
   return result
 }
 
-const TEST_PROMPT: LanguageModelV3Prompt = [{ role: "user", content: [{ type: "text", text: "Hello" }] }]
+type Prompt = Parameters<OpenAICompatibleChatLanguageModel["doStream"]>[0]["prompt"]
+
+const TEST_PROMPT: Prompt = [{ role: "user", content: [{ type: "text", text: "Hello" }] }]
 
 // Fixtures from copilot_test.exs
 const FIXTURES = {

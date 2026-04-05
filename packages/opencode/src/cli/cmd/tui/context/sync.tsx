@@ -75,6 +75,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       vcs: VcsInfo | undefined
       path: Path
       workspaceList: Workspace[]
+      boot: {
+        done: number
+        total: number
+        pending: string[]
+      }
     }>({
       provider_next: {
         all: [],
@@ -103,6 +108,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       vcs: undefined,
       path: { state: "", config: "", worktree: "", directory: "" },
       workspaceList: [],
+      boot: {
+        done: 0,
+        total: 0,
+        pending: [],
+      },
     })
 
     const sdk = useSDK()
@@ -367,15 +377,34 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const providerListPromise = sdk.client.provider.list({}, { throwOnError: true })
       const agentsPromise = sdk.client.app.agents({}, { throwOnError: true })
       const configPromise = sdk.client.config.get({}, { throwOnError: true })
-      const blockingRequests: Promise<unknown>[] = [
-        providersPromise,
-        providerListPromise,
-        agentsPromise,
-        configPromise,
-        ...(args.continue ? [sessionListPromise] : []),
+      const blocking: { label: string; task: Promise<unknown> }[] = [
+        { label: "Loading providers", task: providersPromise },
+        { label: "Loading models", task: providerListPromise },
+        { label: "Loading agents", task: agentsPromise },
+        { label: "Loading config", task: configPromise },
+        ...(args.continue ? [{ label: "Loading sessions", task: sessionListPromise }] : []),
       ]
+      const finish = <T,>(label: string, task: Promise<T>) =>
+        task.finally(() => {
+          if (store.status !== "loading") return
+          setStore(
+            "boot",
+            produce((draft) => {
+              draft.done = Math.min(draft.total, draft.done + 1)
+              draft.pending = draft.pending.filter((item) => item !== label)
+            }),
+          )
+        })
 
-      await Promise.all(blockingRequests)
+      if (store.status === "loading") {
+        setStore("boot", {
+          done: 0,
+          total: blocking.length,
+          pending: blocking.map((item) => item.label),
+        })
+      }
+
+      await Promise.all(blocking.map((item) => finish(item.label, item.task)))
         .then(() => {
           const providersResponse = providersPromise.then((x) => x.data!)
           const providerListResponse = providerListPromise.then((x) => x.data!)
@@ -450,6 +479,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       },
       get ready() {
         return store.status !== "loading"
+      },
+      get boot() {
+        return store.boot
       },
       session: {
         get(sessionID: string) {

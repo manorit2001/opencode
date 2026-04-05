@@ -160,6 +160,21 @@ function errorMessage(error: unknown) {
   return FormatUnknownError(error)
 }
 
+function SyncLoading() {
+  const sync = useSync()
+
+  return (
+    <StartupLoading
+      active={() => true}
+      mode="screen"
+      title={() => "Starting OpenCode"}
+      text={() => sync.boot.pending[0] ?? "Preparing the interface"}
+      done={() => sync.boot.done}
+      total={() => sync.boot.total}
+    />
+  )
+}
+
 export function tui(input: {
   url: string
   args: Args
@@ -201,7 +216,7 @@ export function tui(input: {
         >
           <ArgsProvider {...input.args}>
             <ExitProvider onBeforeExit={onBeforeExit} onExit={onExit}>
-              <KVProvider>
+              <KVProvider gate={false}>
                 <ToastProvider>
                   <RouteProvider>
                     <TuiConfigProvider config={input.config}>
@@ -212,8 +227,8 @@ export function tui(input: {
                         headers={input.headers}
                         events={input.events}
                       >
-                        <SyncProvider>
-                          <ThemeProvider mode={mode}>
+                        <ThemeProvider mode={mode} gate={false}>
+                          <SyncProvider fallback={<SyncLoading />}>
                             <LocalProvider>
                               <KeybindProvider>
                                 <PromptStashProvider>
@@ -231,8 +246,8 @@ export function tui(input: {
                                 </PromptStashProvider>
                               </KeybindProvider>
                             </LocalProvider>
-                          </ThemeProvider>
-                        </SyncProvider>
+                          </SyncProvider>
+                        </ThemeProvider>
                       </SDKProvider>
                     </TuiConfigProvider>
                   </RouteProvider>
@@ -901,19 +916,21 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <Show when={Flag.OPENCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <Show when={ready()}>
-        <Switch>
-          <Match when={route.data.type === "home"}>
-            <Home />
-          </Match>
-          <Match when={route.data.type === "session"}>
-            <Session />
-          </Match>
-        </Switch>
-      </Show>
+      <Switch>
+        <Match when={route.data.type === "home"}>
+          <Home />
+        </Match>
+        <Match when={route.data.type === "session"}>
+          <Session />
+        </Match>
+      </Switch>
       {plugin()}
       <TuiPluginRuntime.Slot name="app" />
-      <StartupLoading ready={ready} />
+      <StartupLoading
+        active={() => !ready()}
+        title={() => "Loading plugins"}
+        text={() => "Starting optional TUI extensions in the background"}
+      />
     </box>
   )
 }

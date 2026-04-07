@@ -220,6 +220,14 @@ export async function bootstrapDirectory(input: {
   if (Object.keys(input.store.config).length === 0 && Object.keys(input.global.config).length > 0) {
     input.setStore("config", reconcile(input.global.config, { merge: false }))
   }
+  if (loading || input.store.provider.all.length === 0) {
+    input.setStore("provider_ready", false)
+  }
+  input.setStore("mcp_ready", false)
+  input.setStore("mcp", {})
+  input.setStore("mcp_session", {})
+  input.setStore("lsp_ready", false)
+  input.setStore("lsp", [])
   if (loading) input.setStore("status", "partial")
 
   const rev = (providerRev.get(input.directory) ?? 0) + 1
@@ -234,8 +242,7 @@ export async function bootstrapDirectory(input: {
       () =>
         retry(() => input.sdk.config.get().then((x) => input.setStore("config", reconcile(x.data!, { merge: false })))),
       () => retry(() => input.sdk.session.status().then((x) => input.setStore("session_status", x.data!))),
-      !seededProject &&
-        (() => retry(() => input.sdk.project.current()).then((x) => input.setStore("project", x.data!.id))),
+      !seededProject && (() => retry(() => input.sdk.project.current()).then((x) => input.setStore("project", x.data!.id))),
       !seededPath &&
         (() =>
           input.queryClient.ensureQueryData(loadPathQuery(input.directory, input.sdk)).then((data) => {
@@ -250,7 +257,14 @@ export async function bootstrapDirectory(input: {
             if (next) input.vcsCache.setStore("value", next)
           }),
         ),
-      () => retry(() => input.sdk.command.list().then((x) => input.setStore("command", x.data ?? []))),
+      () =>
+        retry(() =>
+          input.sdk.command.list().then((x) => {
+            const list = x.data ?? []
+            input.setStore("command_base", list)
+            input.setStore("command", list)
+          }),
+        ),
       () =>
         retry(() =>
           input.sdk.permission.list().then((x) => {
@@ -314,7 +328,7 @@ export async function bootstrapDirectory(input: {
             description: formatServerError(err, input.translate),
           })
         }),
-    ].filter(Boolean) as (() => Promise<any>)[]
+    ].filter(Boolean) as (() => Promise<unknown>)[]
 
     await waitForPaint()
     const slowErrs = errors(await runAll(slow))

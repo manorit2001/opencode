@@ -207,6 +207,7 @@ export function createChildStoreManager(input: {
             },
             status: "loading" as const,
             agent: [],
+            command_base: [],
             command: [],
             session: [],
             sessionTotal: 0,
@@ -221,6 +222,7 @@ export function createChildStoreManager(input: {
             get mcp() {
               return mcpQuery.isLoading ? {} : (mcpQuery.data ?? {})
             },
+            mcp_session: {},
             get lsp_ready() {
               return !lspQuery.isLoading
             },

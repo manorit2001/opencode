@@ -15,10 +15,12 @@ import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
 import { showToast } from "@opencode-ai/ui/toast"
 import { findLast } from "@opencode-ai/core/util/array"
+import { createEffect, onCleanup } from "solid-js"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { extractPromptFromParts } from "@/utils/prompt"
-import { UserMessage } from "@opencode-ai/sdk/v2"
+import { type Command, UserMessage } from "@opencode-ai/sdk/v2"
 import { useSessionLayout } from "@/pages/session/session-layout"
+import { deriveMcpSession } from "@/context/global-sync/mcp-session"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -56,6 +58,65 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     if (!id) return
     return sync.session.get(id)
   }
+
+  let active = ""
+
+  createEffect(() => {
+    const sessionID = params.id
+    const session = info()
+
+    if (!sessionID || !session) {
+      active = ""
+      sync.set("command", sync.data.command_base)
+      sync.set("mcp_session", {})
+      return
+    }
+
+    if (active !== sessionID) {
+      active = sessionID
+      sync.set("command", sync.data.command_base)
+      sync.set("mcp_session", {})
+    }
+
+    let dead = false
+    const client = sdk.client as typeof sdk.client & {
+      client: {
+        get: (input: {
+          url: string
+          path: { sessionID: string }
+          query?: { directory?: string; workspace?: string }
+        }) => Promise<{ data?: string[] }>
+      }
+      command2: {
+        list: (input: { sessionID: string }) => Promise<{ data?: Command[] }>
+      }
+    }
+
+    void Promise.allSettled([
+      client.command2.list({ sessionID }),
+      client.client.get({ url: "/session/{sessionID}/mcp", path: { sessionID } }),
+    ]).then(([commands, active]) => {
+      if (dead) return
+
+      if (commands.status === "fulfilled") {
+        sync.set("command", commands.value.data ?? sync.data.command_base)
+      } else {
+        sync.set("command", sync.data.command_base)
+      }
+
+      if (active.status === "fulfilled") {
+        const names = (active.value.data ?? []) as string[]
+        sync.set("mcp_session", deriveMcpSession(names))
+      } else {
+        sync.set("mcp_session", {})
+      }
+    })
+
+    onCleanup(() => {
+      dead = true
+    })
+  })
+
   const hasReview = () => !!params.id
   const normalizeTab = (tab: string) => {
     if (!tab.startsWith("file://")) return tab

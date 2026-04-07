@@ -33,6 +33,7 @@ export type ProjectMeta = {
 export type State = {
   status: "loading" | "partial" | "complete"
   agent: Agent[]
+  command_base: Command[]
   command: Command[]
   project: string
   projectMeta: ProjectMeta | undefined
@@ -61,6 +62,13 @@ export type State = {
   mcp_ready: boolean
   mcp: {
     [name: string]: McpStatus
+  }
+  mcp_session: {
+    [name: string]: {
+      active: boolean
+      status: "active" | "error" | "inactive" | "loading"
+      error?: string
+    }
   }
   lsp_ready: boolean
   lsp: LspStatus[]

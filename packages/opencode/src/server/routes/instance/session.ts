@@ -13,22 +13,32 @@ import { SessionShare } from "@/share/session"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
-import { Effect } from "effect"
 import { Agent } from "@/agent/agent"
 import { Snapshot } from "@/snapshot"
 import { Command } from "@/command"
-import * as Log from "@opencode-ai/core/util/log"
+import { provide as provideInstance } from "@/project/with-instance"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { errors } from "../../error"
 import { lazy } from "@/util/lazy"
-import { zodObject } from "@/util/effect-zod"
 import { Bus } from "@/bus"
+import { MCP } from "@/mcp"
+import * as Log from "@opencode-ai/core/util/log"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { Effect } from "effect"
 import { jsonRequest, runRequest } from "./trace"
+import { zodObject } from "@/util/effect-zod"
 
 const log = Log.create({ service: "server" })
+
+const MCPStatusResponse = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("connected") }),
+  z.object({ status: z.literal("disabled") }),
+  z.object({ status: z.literal("failed"), error: z.string() }),
+  z.object({ status: z.literal("needs_auth") }),
+  z.object({ status: z.literal("needs_client_registration"), error: z.string() }),
+])
 
 const QueryBoolean = z.union([
   z.preprocess((value) => (value === "true" ? true : value === "false" ? false : value), z.boolean()),
@@ -272,6 +282,16 @@ export const SessionRoutes = lazy(() =>
         jsonRequest("SessionRoutes.delete", c, function* () {
           const sessionID = c.req.valid("param").sessionID
           const svc = yield* Session.Service
+          const session = yield* svc.get(sessionID)
+          yield* Effect.promise(async () =>
+            provideInstance({
+              directory: session.directory,
+              fn: async () => {
+                const active = await MCP.active(sessionID)
+                for (const name of active) await MCP.unload(sessionID, name)
+              },
+            }),
+          )
           yield* svc.remove(sessionID)
           return true
         }),
@@ -946,6 +966,40 @@ export const SessionRoutes = lazy(() =>
         return c.body(null, 204)
       },
     )
+    .get(
+      "/:sessionID/command",
+      describeRoute({
+        summary: "List session commands",
+        description: "Get the command list available to a specific session, including loaded MCP prompts.",
+        operationId: "session.command.list",
+        responses: {
+          200: {
+            description: "Command list",
+            content: {
+              "application/json": {
+                schema: resolver(Command.Info.zod.array()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const session = await runRequest(
+          "SessionRoutes.command.list.session",
+          c,
+          Session.Service.use((svc) => svc.get(sessionID)),
+        )
+        return c.json(await provideInstance({ directory: session.directory, fn: async () => Command.list(sessionID) }))
+      },
+    )
     .post(
       "/:sessionID/command",
       describeRoute({
@@ -983,6 +1037,110 @@ export const SessionRoutes = lazy(() =>
           const svc = yield* SessionPrompt.Service
           return yield* svc.command({ ...body, sessionID })
         }),
+    )
+    .get(
+      "/:sessionID/mcp",
+      describeRoute({
+        summary: "List session MCPs",
+        description: "Get the MCP servers currently loaded for a specific session.",
+        operationId: "session.mcp.active",
+        responses: {
+          200: {
+            description: "Active session MCPs",
+            content: {
+              "application/json": {
+                schema: resolver(z.string().array()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const session = await runRequest(
+          "SessionRoutes.mcp.active.session",
+          c,
+          Session.Service.use((svc) => svc.get(sessionID)),
+        )
+        return c.json(await provideInstance({ directory: session.directory, fn: async () => MCP.active(sessionID) }))
+      },
+    )
+    .post(
+      "/:sessionID/mcp/:name",
+      describeRoute({
+        summary: "Load session MCP",
+        description: "Load an MCP server for a specific session and activate its prompt commands.",
+        operationId: "session.mcp.load",
+        responses: {
+          200: {
+            description: "MCP status",
+            content: {
+              "application/json": {
+                schema: resolver(MCPStatusResponse),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+          name: z.string(),
+        }),
+      ),
+      async (c) => {
+        const { sessionID, name } = c.req.valid("param")
+        const session = await runRequest(
+          "SessionRoutes.mcp.load.session",
+          c,
+          Session.Service.use((svc) => svc.get(sessionID)),
+        )
+        return c.json(await provideInstance({ directory: session.directory, fn: async () => MCP.load(sessionID, name) }))
+      },
+    )
+    .delete(
+      "/:sessionID/mcp/:name",
+      describeRoute({
+        summary: "Unload session MCP",
+        description: "Unload an MCP server from a specific session and remove its prompt commands.",
+        operationId: "session.mcp.unload",
+        responses: {
+          200: {
+            description: "MCP status",
+            content: {
+              "application/json": {
+                schema: resolver(MCPStatusResponse),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+          name: z.string(),
+        }),
+      ),
+      async (c) => {
+        const { sessionID, name } = c.req.valid("param")
+        const session = await runRequest(
+          "SessionRoutes.mcp.unload.session",
+          c,
+          Session.Service.use((svc) => svc.get(sessionID)),
+        )
+        return c.json(await provideInstance({ directory: session.directory, fn: async () => MCP.unload(sessionID, name) }))
+      },
     )
     .post(
       "/:sessionID/shell",

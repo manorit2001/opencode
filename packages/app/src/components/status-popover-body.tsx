@@ -5,11 +5,13 @@ import { Switch } from "@opencode-ai/ui/switch"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { useMutation, useQueryClient } from "@tanstack/solid-query"
 import { showToast } from "@opencode-ai/ui/toast"
-import { useNavigate } from "@solidjs/router"
+import { useNavigate, useParams } from "@solidjs/router"
 import { type Accessor, createEffect, createMemo, For, type JSXElement, onCleanup, Show } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
+import { type Command } from "@opencode-ai/sdk/v2"
 import { ServerHealthIndicator, ServerRow } from "@/components/server/server-row"
 import { useLanguage } from "@/context/language"
+import { deriveMcpSession } from "@/context/global-sync/mcp-session"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { normalizeServerUrl, ServerConnection, useServer } from "@/context/server"
@@ -139,11 +141,79 @@ const useMcpToggleMutation = () => {
   const sdk = useSDK()
   const language = useLanguage()
   const queryClient = useQueryClient()
+  const params = useParams()
+
+  const client = sdk.client as typeof sdk.client & {
+    client: {
+      get: (input: {
+        url: string
+        path: { sessionID: string }
+        query?: { directory?: string; workspace?: string }
+      }) => Promise<{ data?: string[] }>
+      post: (input: {
+        url: string
+        path: { sessionID: string; name: string }
+        query?: { directory?: string; workspace?: string }
+      }) => Promise<unknown>
+      delete: (input: {
+        url: string
+        path: { sessionID: string; name: string }
+        query?: { directory?: string; workspace?: string }
+      }) => Promise<unknown>
+    }
+    command2: {
+      list: (input: { sessionID: string }) => Promise<{ data?: Command[] }>
+    }
+  }
+
+  const refresh = async (sessionID: string) => {
+    const [commands, active, status] = await Promise.allSettled([
+      client.command2.list({ sessionID }),
+      client.client.get({ url: "/session/{sessionID}/mcp", path: { sessionID } }),
+      sdk.client.mcp.status(),
+    ])
+    if (commands.status === "fulfilled") {
+      const list = commands.value.data ?? sync.data.command_base
+      sync.set("command", list)
+    }
+    if (active.status === "fulfilled") {
+      const names = (active.value.data ?? []) as string[]
+      sync.set("mcp_session", deriveMcpSession(names))
+    } else {
+      sync.set("mcp_session", {})
+    }
+    if (status.status === "fulfilled") {
+      sync.set("mcp", status.value.data ?? {})
+      sync.set("mcp_ready", true)
+    }
+  }
 
   return useMutation(() => ({
     mutationFn: async (name: string) => {
-      const status = sync.data.mcp[name]
-      await (status?.status === "connected" ? sdk.client.mcp.disconnect({ name }) : sdk.client.mcp.connect({ name }))
+      const sessionID = params.id
+      if (!sessionID) return
+
+      const current = sync.data.mcp_session[name]
+      const active = current?.active ?? false
+      sync.set("mcp_session", name, {
+        active: !active,
+        status: "loading",
+      })
+
+      try {
+        await (active
+          ? client.client.delete({ url: "/session/{sessionID}/mcp/{name}", path: { sessionID, name } })
+          : client.client.post({ url: "/session/{sessionID}/mcp/{name}", path: { sessionID, name } }))
+        await refresh(sessionID)
+      } catch (err) {
+        await refresh(sessionID)
+        sync.set("mcp_session", name, {
+          active,
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
     },
     onSuccess: () => queryClient.refetchQueries({ queryKey: mcpQueryKey(sync.directory) }),
     onError: (err) => {
@@ -195,7 +265,7 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   const defaultServer = useDefaultServerKey(platform.getDefaultServer)
   const mcpNames = createMemo(() => Object.keys(sync.data.mcp ?? {}).sort((a, b) => a.localeCompare(b)))
   const mcpStatus = (name: string) => sync.data.mcp?.[name]?.status
-  const mcpConnected = createMemo(() => mcpNames().filter((name) => mcpStatus(name) === "connected").length)
+  const mcpActive = createMemo(() => Object.values(sync.data.mcp_session ?? {}).filter((item) => item.active).length)
   const lspItems = createMemo(() => sync.data.lsp ?? [])
   const lspCount = createMemo(() => lspItems().length)
   const plugins = createMemo(() =>
@@ -220,7 +290,7 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
             {language.t("status.popover.tab.servers")}
           </Tabs.Trigger>
           <Tabs.Trigger value="mcp" data-slot="tab" class="text-12-regular">
-            {mcpConnected() > 0 ? `${mcpConnected()} ` : ""}
+            {mcpActive() > 0 ? `${mcpActive()} ` : ""}
             {language.t("status.popover.tab.mcp")}
           </Tabs.Trigger>
           <Tabs.Trigger value="lsp" data-slot="tab" class="text-12-regular">
@@ -310,7 +380,8 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                 <For each={mcpNames()}>
                   {(name) => {
                     const status = () => mcpStatus(name)
-                    const enabled = () => status() === "connected"
+                    const session = () => sync.data.mcp_session[name]
+                    const sessionLabel = () => session()?.status ?? "inactive"
                     return (
                       <button
                         type="button"
@@ -332,16 +403,30 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                           }}
                         />
                         <span class="text-14-regular text-text-base truncate flex-1">{name}</span>
-                        <div onClick={(event) => event.stopPropagation()}>
-                          <Switch
-                            checked={enabled()}
-                            disabled={toggleMcp.isPending && toggleMcp.variables === name}
-                            onChange={() => {
-                              if (toggleMcp.isPending) return
-                              toggleMcp.mutate(name)
+                        <Show when={session()}>
+                          <span
+                            classList={{
+                              "text-11-regular px-1.5 py-0.5 rounded-md": true,
+                              "bg-surface-base text-text-subtle": sessionLabel() === "inactive",
+                              "bg-surface-base text-text-weak": sessionLabel() === "loading",
+                              "bg-surface-base text-icon-success-base": sessionLabel() === "active",
+                              "bg-surface-base text-icon-critical-base": sessionLabel() === "error",
                             }}
-                          />
-                        </div>
+                          >
+                            {sessionLabel()}
+                          </span>
+                        </Show>
+                        <Switch
+                          checked={session()?.active ?? false}
+                          disabled={toggleMcp.isPending && toggleMcp.variables === name}
+                          onChange={() => {
+                            if (toggleMcp.isPending) return
+                            toggleMcp.mutate(name)
+                          }}
+                          onClick={(event: MouseEvent) => event.stopPropagation()}
+                          onPointerDown={(event: PointerEvent) => event.stopPropagation()}
+                          onKeyDown={(event: KeyboardEvent) => event.stopPropagation()}
+                        />
                       </button>
                     )
                   }}

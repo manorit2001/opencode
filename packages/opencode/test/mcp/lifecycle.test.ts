@@ -11,7 +11,10 @@ interface MockClientState {
   listToolsCalls: number
   listToolsShouldFail: boolean
   listToolsError: string
+  connectCalls: number
+  listPromptsCalls: number
   listPromptsShouldFail: boolean
+  listResourcesCalls: number
   listResourcesShouldFail: boolean
   prompts: Array<{ name: string; description?: string }>
   resources: Array<{ name: string; uri: string; description?: string }>
@@ -38,7 +41,10 @@ function getOrCreateClientState(name?: string): MockClientState {
       listToolsCalls: 0,
       listToolsShouldFail: false,
       listToolsError: "listTools failed",
+      connectCalls: 0,
+      listPromptsCalls: 0,
       listPromptsShouldFail: false,
+      listResourcesCalls: 0,
       listResourcesShouldFail: false,
       prompts: [],
       resources: [],
@@ -125,6 +131,7 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
       await transport.start()
       // After successful connect, bind to the last-created client name
       this._state = getOrCreateClientState(lastCreatedClientName)
+      this._state.connectCalls++
     }
 
     setNotificationHandler(schema: unknown, handler: (...args: any[]) => any) {
@@ -140,6 +147,7 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
     }
 
     async listPrompts() {
+      if (this._state) this._state.listPromptsCalls++
       if (this._state?.listPromptsShouldFail) {
         throw new Error("listPrompts failed")
       }
@@ -147,10 +155,34 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
     }
 
     async listResources() {
+      if (this._state) this._state.listResourcesCalls++
       if (this._state?.listResourcesShouldFail) {
         throw new Error("listResources failed")
       }
       return { resources: this._state?.resources ?? [] }
+    }
+
+    async getPrompt(input: { name: string }) {
+      return {
+        messages: [
+          {
+            role: "user",
+            content: { type: "text", text: `prompt:${input.name}` },
+          },
+        ],
+      }
+    }
+
+    async readResource(input: { uri: string }) {
+      return {
+        contents: [
+          {
+            uri: input.uri,
+            mimeType: "text/plain",
+            text: "resource",
+          },
+        ],
+      }
     }
 
     async close() {
@@ -529,6 +561,74 @@ test(
 )
 
 test(
+  "ensure() deduplicates concurrent connection attempts",
+  withInstance(
+    {
+      "dedupe-server": {
+        type: "local",
+        command: ["echo", "test"],
+      },
+    },
+    async () => {
+      lastCreatedClientName = "dedupe-server"
+      const serverState = getOrCreateClientState("dedupe-server")
+
+      await Promise.all([MCP.ensure("dedupe-server"), MCP.ensure("dedupe-server")])
+
+      expect(clientCreateCount).toBe(1)
+      expect(serverState.connectCalls).toBe(1)
+      expect(serverState.listToolsCalls).toBe(1)
+    },
+  ),
+)
+
+test(
+  "getPrompt() auto-ensures explicit named access",
+  withInstance(
+    {
+      "prompt-server": {
+        type: "local",
+        command: ["echo", "test"],
+      },
+    },
+    async () => {
+      lastCreatedClientName = "prompt-server"
+      const serverState = getOrCreateClientState("prompt-server")
+      serverState.prompts = [{ name: "named_prompt", description: "A named prompt" }]
+
+      const prompt = await MCP.getPrompt("prompt-server", "named_prompt")
+
+      expect(prompt?.messages.length).toBeGreaterThan(0)
+      expect(clientCreateCount).toBe(1)
+      expect(serverState.connectCalls).toBe(1)
+    },
+  ),
+)
+
+test(
+  "readResource() auto-ensures explicit named access",
+  withInstance(
+    {
+      "resource-server": {
+        type: "local",
+        command: ["echo", "test"],
+      },
+    },
+    async () => {
+      lastCreatedClientName = "resource-server"
+      const serverState = getOrCreateClientState("resource-server")
+      serverState.resources = [{ name: "named_resource", uri: "file:///test.txt", description: "A resource" }]
+
+      const resource = await MCP.readResource("resource-server", "file:///test.txt")
+
+      expect(resource?.contents.length).toBeGreaterThan(0)
+      expect(clientCreateCount).toBe(1)
+      expect(serverState.connectCalls).toBe(1)
+    },
+  ),
+)
+
+test(
   "prompts() skips disconnected servers",
   withInstance(
     {
@@ -655,7 +755,9 @@ test("McpOAuthCallback.cancelPending is keyed by mcpName but pendingAuths uses o
   // The callback should still be pending because cancelPending looked up
   // "my-mcp-server" in a map keyed by "abc123hexstate"
   let rejected = false
-  callbackPromise.then(() => {}).catch(() => (rejected = true))
+  callbackPromise.catch(() => {
+    rejected = true
+  })
 
   // Give it a tick
   await new Promise((r) => setTimeout(r, 50))

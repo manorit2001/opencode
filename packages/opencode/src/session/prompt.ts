@@ -1642,11 +1642,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
-      const cmd = yield* commands.get(input.command)
+      let cmd = yield* commands.get(input.command, input.sessionID)
+      let load: { status: string; error?: string } | undefined
       if (!cmd) {
-        const available = (yield* commands.list()).map((c) => c.name)
+        load = yield* mcp.loadCommand(input.sessionID, input.command)
+        cmd = yield* commands.get(input.command, input.sessionID)
+      }
+      if (!cmd) {
+        const available = (yield* commands.list(input.sessionID)).map((c) => c.name)
         const hint = available.length ? ` Available commands: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Command not found: "${input.command}".${hint}` })
+        const reason =
+          load?.status === "failed"
+            ? load.error
+            : load?.status === "needs_auth"
+              ? "MCP server needs authentication"
+              : load?.status === "needs_client_registration"
+                ? "MCP server needs client registration"
+                : undefined
+        const error = new NamedError.Unknown({
+          message: reason ? `${reason}.` : `Command not found: "${input.command}".${hint}`,
+        })
         yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }

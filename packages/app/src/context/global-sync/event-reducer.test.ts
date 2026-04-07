@@ -61,6 +61,7 @@ const baseState = (input: Partial<State> = {}) =>
   ({
     status: "complete",
     agent: [],
+    command_base: [],
     command: [],
     project: "",
     projectMeta: undefined,
@@ -76,6 +77,7 @@ const baseState = (input: Partial<State> = {}) =>
     permission: {},
     question: {},
     mcp: {},
+    mcp_session: {},
     lsp: [],
     vcs: undefined,
     limit: 10,

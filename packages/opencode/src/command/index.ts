@@ -1,6 +1,7 @@
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
+import { makeRuntime } from "@/effect/run-service"
 import type { InstanceContext } from "@/project/instance"
 import { SessionID, MessageID } from "@/session/schema"
 import { Effect, Layer, Context, Schema } from "effect"
@@ -14,17 +15,17 @@ import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 
 type State = {
-  commands: Record<string, Info>
+  base: Record<string, Info>
 }
 
 export const Event = {
   Executed: BusEvent.define(
     "command.executed",
-    Schema.Struct({
-      name: Schema.String,
-      sessionID: SessionID,
-      arguments: Schema.String,
-      messageID: MessageID,
+    z.object({
+      name: z.string(),
+      sessionID: SessionID.zod,
+      arguments: z.string(),
+      messageID: MessageID.zod,
     }),
   ),
 }
@@ -35,6 +36,7 @@ export const Info = Schema.Struct({
   agent: Schema.optional(Schema.String),
   model: Schema.optional(Schema.String),
   source: Schema.optional(Schema.Literals(["command", "mcp", "skill"])),
+  client: Schema.optional(Schema.String),
   // Some command templates are lazy promises from MCP prompt resolution.
   template: Schema.Unknown.annotate({ [ZodOverride]: z.promise(z.string()).or(z.string()) }),
   subtask: Schema.optional(Schema.Boolean),
@@ -62,8 +64,8 @@ export const Default = {
 } as const
 
 export interface Interface {
-  readonly get: (name: string) => Effect.Effect<Info | undefined>
-  readonly list: () => Effect.Effect<Info[]>
+  readonly get: (name: string, sessionID?: SessionID) => Effect.Effect<Info | undefined>
+  readonly list: (sessionID?: SessionID) => Effect.Effect<Info[]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Command") {}
@@ -74,51 +76,80 @@ export const layer = Layer.effect(
     const config = yield* Config.Service
     const mcp = yield* MCP.Service
     const skill = yield* Skill.Service
+    const bridge = yield* EffectBridge.make()
 
-    const init = Effect.fn("Command.state")(function* (ctx: InstanceContext) {
-      const cfg = yield* config.get()
-      const bridge = yield* EffectBridge.make()
-      const commands: Record<string, Info> = {}
+    const init = Effect.fn("Command.state")((ctx: InstanceContext) =>
+      Effect.gen(function* () {
+        const cfg = yield* config.get()
+        const base: Record<string, Info> = {}
 
-      commands[Default.INIT] = {
-        name: Default.INIT,
-        description: "guided AGENTS.md setup",
-        source: "command",
-        get template() {
-          return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
-        },
-        hints: hints(PROMPT_INITIALIZE),
-      }
-      commands[Default.REVIEW] = {
-        name: Default.REVIEW,
-        description: "review changes [commit|branch|pr], defaults to uncommitted",
-        source: "command",
-        get template() {
-          return PROMPT_REVIEW.replace("${path}", ctx.worktree)
-        },
-        subtask: true,
-        hints: hints(PROMPT_REVIEW),
-      }
-
-      for (const [name, command] of Object.entries(cfg.command ?? {})) {
-        commands[name] = {
-          name,
-          agent: command.agent,
-          model: command.model,
-          description: command.description,
+        base[Default.INIT] = {
+          name: Default.INIT,
+          description: "guided AGENTS.md setup",
           source: "command",
           get template() {
-            return command.template
+            return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
           },
-          subtask: command.subtask,
-          hints: hints(command.template),
+          hints: hints(PROMPT_INITIALIZE),
         }
-      }
+        base[Default.REVIEW] = {
+          name: Default.REVIEW,
+          description: "review changes [commit|branch|pr], defaults to uncommitted",
+          source: "command",
+          get template() {
+            return PROMPT_REVIEW.replace("${path}", ctx.worktree)
+          },
+          subtask: true,
+          hints: hints(PROMPT_REVIEW),
+        }
 
-      for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
+        for (const [name, command] of Object.entries(cfg.command ?? {})) {
+          base[name] = {
+            name,
+            agent: command.agent,
+            model: command.model,
+            description: command.description,
+            source: "command",
+            get template() {
+              return command.template
+            },
+            subtask: command.subtask,
+            hints: hints(command.template),
+          }
+        }
+
+        for (const item of yield* skill.all()) {
+          if (base[item.name]) continue
+          base[item.name] = {
+            name: item.name,
+            description: item.description,
+            source: "skill",
+            get template() {
+              return item.content
+            },
+            hints: [],
+          }
+        }
+
+        return {
+          base,
+        }
+      }),
+    )
+
+    const state = yield* InstanceState.make<State>((ctx) => init(ctx))
+
+    const commands = Effect.fn("Command.commands")(function* (sessionID?: SessionID) {
+      const s = yield* InstanceState.get(state)
+      if (!sessionID) return s.base
+
+      const commands: Record<string, Info> = { ...s.base }
+      for (const [name, prompt] of Object.entries(yield* mcp.prompts(sessionID))) {
+        if (commands[name]) continue
         commands[name] = {
           name,
           source: "mcp",
+          client: prompt.client,
           description: prompt.description,
           get template() {
             return bridge.promise(
@@ -144,34 +175,17 @@ export const layer = Layer.effect(
         }
       }
 
-      for (const item of yield* skill.all()) {
-        if (commands[item.name]) continue
-        commands[item.name] = {
-          name: item.name,
-          description: item.description,
-          source: "skill",
-          get template() {
-            return item.content
-          },
-          hints: [],
-        }
-      }
-
-      return {
-        commands,
-      }
+      return commands
     })
 
-    const state = yield* InstanceState.make<State>((ctx) => init(ctx))
-
-    const get = Effect.fn("Command.get")(function* (name: string) {
-      const s = yield* InstanceState.get(state)
-      return s.commands[name]
+    const get = Effect.fn("Command.get")(function* (name: string, sessionID?: SessionID) {
+      const s = yield* commands(sessionID)
+      return s[name]
     })
 
-    const list = Effect.fn("Command.list")(function* () {
-      const s = yield* InstanceState.get(state)
-      return Object.values(s.commands)
+    const list = Effect.fn("Command.list")(function* (sessionID?: SessionID) {
+      const s = yield* commands(sessionID)
+      return Object.values(s)
     })
 
     return Service.of({ get, list })
@@ -183,5 +197,11 @@ export const defaultLayer = layer.pipe(
   Layer.provide(MCP.defaultLayer),
   Layer.provide(Skill.defaultLayer),
 )
+
+const { runPromise } = makeRuntime(Service, defaultLayer)
+
+export async function list(sessionID?: SessionID) {
+  return runPromise((svc) => svc.list(sessionID))
+}
 
 export * as Command from "."

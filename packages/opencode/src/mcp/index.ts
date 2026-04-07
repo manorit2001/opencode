@@ -24,10 +24,13 @@ import { McpAuth } from "./auth"
 import { BusEvent } from "../bus/bus-event"
 import { Bus } from "@/bus"
 import { TuiEvent } from "@/cli/cmd/tui/event"
+import { SessionID } from "@/session/schema"
 import open from "open"
 import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
+import { makeRuntime } from "@/effect/run-service"
 import { InstanceState } from "@/effect/instance-state"
+import type { InstanceContext } from "@/project/instance"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { zod as effectZod } from "@/util/effect-zod"
@@ -202,21 +205,20 @@ interface AuthResult {
 
 // --- Effect Service ---
 
-interface State {
-  status: Record<string, Status>
-  clients: Record<string, MCPClient>
-  defs: Record<string, MCPToolDef[]>
-}
-
 export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly tools: () => Effect.Effect<Record<string, Tool>>
-  readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
+  readonly prompts: (sessionID?: SessionID) => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
+  readonly ensure: (name: string) => Effect.Effect<Status>
   readonly connect: (name: string) => Effect.Effect<void>
   readonly disconnect: (name: string) => Effect.Effect<void>
+  readonly load: (sessionID: SessionID, name: string) => Effect.Effect<Status>
+  readonly loadCommand: (sessionID: SessionID, command: string) => Effect.Effect<Status | undefined>
+  readonly unload: (sessionID: SessionID, name: string) => Effect.Effect<Status>
+  readonly active: (sessionID: SessionID) => Effect.Effect<string[]>
   readonly getPrompt: (
     clientName: string,
     name: string,
@@ -246,6 +248,17 @@ export const layer = Layer.effect(
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
+    interface State {
+      status: Record<string, Status>
+      clients: Record<string, MCPClient>
+      defs: Record<string, MCPToolDef[]>
+      config: Record<string, McpEntry>
+      timeout?: number
+      sessions: Map<string, Set<string>>
+      refs: Map<string, Set<string>>
+      pending: Map<string, Promise<Status>>
+    }
+
     /**
      * Connect a client via the given transport with resource safety:
      * on failure the transport is closed; on success the caller owns it.
@@ -272,13 +285,6 @@ export const layer = Layer.effect(
     ) {
       const oauthDisabled = mcp.oauth === false
       const oauthConfig = typeof mcp.oauth === "object" ? mcp.oauth : undefined
-      const url = remoteURL(key, mcp.url)
-      if (!url) {
-        return {
-          client: undefined as MCPClient | undefined,
-          status: { status: "failed" as const, error: `Invalid MCP URL for "${key}"` },
-        }
-      }
       let authProvider: McpOAuthProvider | undefined
 
       if (!oauthDisabled) {
@@ -298,6 +304,14 @@ export const layer = Layer.effect(
           },
           auth,
         )
+      }
+
+      const url = remoteURL(key, mcp.url)
+      if (!url) {
+        return {
+          client: undefined as MCPClient | undefined,
+          status: { status: "failed" as const, error: `Invalid MCP URL for "${key}"` },
+        }
       }
 
       const transports: Array<{ name: string; transport: TransportWithAuth }> = [
@@ -344,18 +358,18 @@ export const layer = Layer.effect(
                     duration: 8000,
                   })
                   .pipe(Effect.ignore, Effect.as(undefined))
-              } else {
-                pendingOAuthTransports.set(key, transport)
-                lastStatus = { status: "needs_auth" as const }
-                return bus
-                  .publish(TuiEvent.ToastShow, {
-                    title: "MCP Authentication Required",
-                    message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
-                    variant: "warning",
-                    duration: 8000,
-                  })
-                  .pipe(Effect.ignore, Effect.as(undefined))
               }
+
+              pendingOAuthTransports.set(key, transport)
+              lastStatus = { status: "needs_auth" as const }
+              return bus
+                .publish(TuiEvent.ToastShow, {
+                  title: "MCP Authentication Required",
+                  message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
+                  variant: "warning",
+                  duration: 8000,
+                })
+                .pipe(Effect.ignore, Effect.as(undefined))
             }
 
             log.debug("transport connection failed", {
@@ -372,7 +386,6 @@ export const layer = Layer.effect(
           log.info("connected", { key, transport: result.transportName })
           return { client: result.client as MCPClient | undefined, status: { status: "connected" } as Status }
         }
-        // If this was an auth error, stop trying other transports
         if (lastStatus?.status === "needs_auth" || lastStatus?.status === "needs_client_registration") break
       }
 
@@ -484,14 +497,19 @@ export const layer = Layer.effect(
     }
 
     const state = yield* InstanceState.make<State>(
-      Effect.fn("MCP.state")(function* () {
+      Effect.fn("MCP.state")(function* (_ctx: InstanceContext) {
         const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        const config: Record<string, McpEntry> = cfg.mcp ?? {}
         const s: State = {
           status: {},
           clients: {},
           defs: {},
+          config,
+          timeout: cfg.experimental?.mcp_timeout,
+          sessions: new Map(),
+          refs: new Map(),
+          pending: new Map(),
         }
 
         yield* Effect.forEach(
@@ -555,21 +573,18 @@ export const layer = Layer.effect(
       return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
     }
 
-    const storeClient = Effect.fnUntraced(function* (
-      s: State,
-      name: string,
-      client: MCPClient,
-      listed: MCPToolDef[],
-      timeout?: number,
-    ) {
-      const bridge = yield* EffectBridge.make()
-      yield* closeClient(s, name)
-      s.status[name] = { status: "connected" }
-      s.clients[name] = client
-      s.defs[name] = listed
-      watch(s, name, client, bridge, timeout)
-      return s.status[name]
-    })
+    function store(s: State, name: string, result: CreateResult, mcp: ConfigMCP.Info) {
+      forget(s, name)
+      s.status[name] = result.status
+      if (!result.mcpClient || !result.defs) {
+        return result.status
+      }
+
+      s.clients[name] = result.mcpClient
+      s.defs[name] = result.defs
+      watch(s, name, result.mcpClient, mcp.timeout)
+      return result.status
+    }
 
     const status = Effect.fn("MCP.status")(function* () {
       const s = yield* InstanceState.get(state)
@@ -602,7 +617,7 @@ export const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, mcp.timeout)
+      return yield* store(s, name, result, mcp)
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCP.Info) {
@@ -627,6 +642,116 @@ export const layer = Layer.effect(
       s.status[name] = { status: "disabled" }
     })
 
+    function clearSession(s: State, sessionID: SessionID, name: string) {
+      const sessions = s.sessions.get(sessionID)
+      if (sessions) {
+        sessions.delete(name)
+        if (sessions.size === 0) s.sessions.delete(sessionID)
+      }
+
+      const refs = s.refs.get(name)
+      if (!refs) return true
+      refs.delete(sessionID)
+      if (refs.size > 0) return false
+
+      s.refs.delete(name)
+      return true
+    }
+
+    function clearRefs(s: State, name: string) {
+      const refs = s.refs.get(name)
+      if (!refs) return
+      for (const sessionID of refs) {
+        const sessions = s.sessions.get(sessionID)
+        if (!sessions) continue
+        sessions.delete(name)
+        if (sessions.size === 0) s.sessions.delete(sessionID)
+      }
+      s.refs.delete(name)
+    }
+
+    function forget(s: State, name: string) {
+      delete s.clients[name]
+      delete s.defs[name]
+    }
+
+    function disable(s: State, name: string) {
+      s.status[name] = { status: "disabled" }
+    }
+
+    const ensure = Effect.fn("MCP.ensure")(function* (name: string) {
+      const s = yield* InstanceState.get(state)
+      const current = s.status[name]
+      if (current?.status === "connected" && s.clients[name] && s.defs[name]) return current
+
+      const pending = s.pending.get(name)
+      if (pending) return yield* Effect.promise(() => pending)
+
+      const mcp = yield* getMcpConfig(name)
+      if (!mcp) return { status: "disabled" } as Status
+
+      const task = Effect.runPromise(
+        Effect.gen(function* () {
+          if (s.clients[name]) yield* closeClient(s, name)
+          const result = yield* create(name, mcp)
+          return yield* store(s, name, { mcpClient: result.mcpClient, status: result.status, defs: result.defs }, mcp)
+        }),
+      ).finally(() => {
+        s.pending.delete(name)
+      })
+
+      s.pending.set(name, task)
+      return yield* Effect.promise(() => task)
+    })
+
+    const load = Effect.fn("MCP.load")(function* (sessionID: SessionID, name: string) {
+      const s = yield* InstanceState.get(state)
+      const status = yield* ensure(name)
+      if (status.status !== "connected") return status
+
+      const sessions = s.sessions.get(sessionID) ?? new Set<string>()
+      if (sessions.has(name)) return status
+
+      sessions.add(name)
+      s.sessions.set(sessionID, sessions)
+
+      const refs = s.refs.get(name) ?? new Set<string>()
+      refs.add(sessionID)
+      s.refs.set(name, refs)
+      return status
+    })
+
+    const loadCommand = Effect.fn("MCP.loadCommand")(function* (sessionID: SessionID, command: string) {
+      const prefix = command.split(":", 1)[0]
+      if (!prefix) return
+
+      const s = yield* InstanceState.get(state)
+      const names = Object.keys(s.config).filter((item) => sanitize(item) === prefix)
+      if (names.length !== 1) return
+
+      return yield* load(sessionID, names[0])
+    })
+
+    const unload = Effect.fn("MCP.unload")(function* (sessionID: SessionID, name: string) {
+      const s = yield* InstanceState.get(state)
+      const sessions = s.sessions.get(sessionID)
+      if (!sessions?.has(name)) return s.status[name] ?? { status: "disabled" }
+
+      const last = clearSession(s, sessionID, name)
+      if (last) {
+        yield* closeClient(s, name)
+        clearRefs(s, name)
+        forget(s, name)
+        disable(s, name)
+      }
+      return s.status[name] ?? { status: "disabled" }
+    })
+
+    const active = Effect.fn("MCP.active")(function* (sessionID: SessionID) {
+      const s = yield* InstanceState.get(state)
+      return [...(s.sessions.get(sessionID) ?? new Set<string>())].sort()
+    })
+
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, Tool> = {}
       const s = yield* InstanceState.get(state)
@@ -635,9 +760,7 @@ export const layer = Layer.effect(
       const config = cfg.mcp ?? {}
       const defaultTimeout = cfg.experimental?.mcp_timeout
 
-      const connectedClients = Object.entries(s.clients).filter(
-        ([clientName]) => s.status[clientName]?.status === "connected",
-      )
+      const connectedClients = Object.entries(s.clients).filter(([clientName]) => s.status[clientName]?.status === "connected")
 
       yield* Effect.forEach(
         connectedClients,
@@ -666,18 +789,20 @@ export const layer = Layer.effect(
       s: State,
       listFn: (c: Client) => Promise<T[]>,
       label: string,
+      names?: Set<string>,
     ) {
       return Effect.forEach(
-        Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected"),
+        Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected" && (!names || names.has(name))),
         ([clientName, client]) =>
           fetchFromClient(clientName, client, listFn, label).pipe(Effect.map((items) => Object.entries(items ?? {}))),
         { concurrency: "unbounded" },
       ).pipe(Effect.map((results) => Object.fromEntries<T & { client: string }>(results.flat())))
     }
 
-    const prompts = Effect.fn("MCP.prompts")(function* () {
+    const prompts = Effect.fn("MCP.prompts")(function* (sessionID?: SessionID) {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listPrompts().then((r) => r.prompts), "prompts")
+      const names = sessionID ? s.sessions.get(sessionID) : undefined
+      return yield* collectFromConnected(s, (c) => c.listPrompts().then((r) => r.prompts), "prompts", names)
     })
 
     const resources = Effect.fn("MCP.resources")(function* () {
@@ -711,12 +836,14 @@ export const layer = Layer.effect(
       name: string,
       args?: Record<string, string>,
     ) {
+      yield* ensure(clientName)
       return yield* withClient(clientName, (client) => client.getPrompt({ name, arguments: args }), "getPrompt", {
         promptName: name,
       })
     })
 
     const readResource = Effect.fn("MCP.readResource")(function* (clientName: string, resourceUri: string) {
+      yield* ensure(clientName)
       return yield* withClient(clientName, (client) => client.readResource({ uri: resourceUri }), "readResource", {
         resourceUri,
       })
@@ -737,10 +864,7 @@ export const layer = Layer.effect(
       const url = remoteURL(mcpName, mcpConfig.url)
       if (!url) throw new Error(`Invalid MCP URL for "${mcpName}"`)
 
-      // OAuth config is optional - if not provided, we'll use auto-discovery
       const oauthConfig = typeof mcpConfig.oauth === "object" ? mcpConfig.oauth : undefined
-
-      // Start the callback server with custom redirectUri if configured
       yield* Effect.promise(() => McpOAuthCallback.ensureRunning(oauthConfig?.redirectUri))
 
       const oauthState = Array.from(crypto.getRandomValues(new Uint8Array(32)))
@@ -770,9 +894,7 @@ export const layer = Layer.effect(
       return yield* Effect.tryPromise({
         try: () => {
           const client = new Client({ name: "opencode", version: InstallationVersion })
-          return client
-            .connect(transport)
-            .then(() => ({ authorizationUrl: "", oauthState, client }) satisfies AuthResult)
+          return client.connect(transport).then(() => ({ authorizationUrl: "", oauthState, client }) satisfies AuthResult)
         },
         catch: (error) => error,
       }).pipe(
@@ -804,7 +926,7 @@ export const layer = Layer.effect(
 
         const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, mcpConfig.timeout)
+        return yield* store(s, mcpName, { mcpClient: client, status: { status: "connected" }, defs: listed }, mcpConfig)
       }
 
       log.info("opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
@@ -882,11 +1004,6 @@ export const layer = Layer.effect(
       return mcpConfig.type === "remote" && mcpConfig.oauth !== false
     })
 
-    const hasStoredTokens = Effect.fn("MCP.hasStoredTokens")(function* (mcpName: string) {
-      const entry = yield* auth.get(mcpName)
-      return !!entry?.tokens
-    })
-
     const getAuthStatus = Effect.fn("MCP.getAuthStatus")(function* (mcpName: string) {
       const entry = yield* auth.get(mcpName)
       if (!entry?.tokens) return "not_authenticated" as AuthStatus
@@ -901,8 +1018,13 @@ export const layer = Layer.effect(
       prompts,
       resources,
       add,
+      ensure,
       connect,
       disconnect,
+      load,
+      loadCommand,
+      unload,
+      active,
       getPrompt,
       readResource,
       startAuth,
@@ -918,8 +1040,6 @@ export const layer = Layer.effect(
 
 export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 
-// --- Per-service runtime ---
-
 export const defaultLayer = layer.pipe(
   Layer.provide(McpAuth.layer),
   Layer.provide(Bus.layer),
@@ -928,4 +1048,40 @@ export const defaultLayer = layer.pipe(
   Layer.provide(AppFileSystem.defaultLayer),
 )
 
+const { runPromise } = makeRuntime(Service, defaultLayer)
+
+export const connect = async (name: string) => runPromise((svc) => svc.connect(name))
+
+export const prompts = async (sessionID?: SessionID) => runPromise((svc) => svc.prompts(sessionID))
+
 export * as MCP from "."
+
+export const load = async (sessionID: SessionID, name: string) => runPromise((svc) => svc.load(sessionID, name))
+
+export const loadCommand = async (sessionID: SessionID, command: string) =>
+  runPromise((svc) => svc.loadCommand(sessionID, command))
+
+export const unload = async (sessionID: SessionID, name: string) => runPromise((svc) => svc.unload(sessionID, name))
+
+export const active = async (sessionID: SessionID) => runPromise((svc) => svc.active(sessionID))
+
+export const getPrompt = async (clientName: string, name: string, args?: Record<string, string>) =>
+  runPromise((svc) => svc.getPrompt(clientName, name, args))
+
+export const startAuth = async (mcpName: string) => runPromise((svc) => svc.startAuth(mcpName))
+
+export const authenticate = async (mcpName: string) => runPromise((svc) => svc.authenticate(mcpName))
+
+export const finishAuth = async (mcpName: string, authorizationCode: string) =>
+  runPromise((svc) => svc.finishAuth(mcpName, authorizationCode))
+
+export const removeAuth = async (mcpName: string) => runPromise((svc) => svc.removeAuth(mcpName))
+
+export const supportsOAuth = async (mcpName: string) => runPromise((svc) => svc.supportsOAuth(mcpName))
+
+export const hasStoredTokens = async (mcpName: string) => runPromise((svc) => svc.hasStoredTokens(mcpName))
+
+export const getAuthStatus = async (mcpName: string) => runPromise((svc) => svc.getAuthStatus(mcpName))
+
+export const readResource = async (clientName: string, resourceUri: string) =>
+  runPromise((svc) => svc.readResource(clientName, resourceUri))

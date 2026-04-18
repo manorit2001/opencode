@@ -17,16 +17,19 @@ Options:
     -h, --help              Display this help message
     -v, --version <version> Install a specific version (e.g., 1.0.180)
     -b, --binary <path>     Install from a local binary instead of downloading
+    -r, --repo <owner/repo>  Download from a fork's GitHub Releases
         --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
-    curl -fsSL https://opencode.ai/install | bash
-    curl -fsSL https://opencode.ai/install | bash -s -- --version 1.0.180
+    curl -fsSL https://github.com/anomalyco/opencode/releases/latest/download/install | bash
+    curl -fsSL https://github.com/anomalyco/opencode/releases/latest/download/install | bash -s -- --version 1.0.180
+    curl -fsSL https://github.com/you/opencode/releases/latest/download/install | bash -s -- --repo you/opencode
     ./install --binary /path/to/opencode
 EOF
 }
 
 requested_version=${VERSION:-}
+repo=${OPENCODE_REPO:-anomalyco/opencode}
 no_modify_path=false
 binary_path=""
 
@@ -51,6 +54,15 @@ while [[ $# -gt 0 ]]; do
                 shift 2
             else
                 echo -e "${RED}Error: --binary requires a path argument${NC}"
+                exit 1
+            fi
+            ;;
+        -r|--repo)
+            if [[ -n "${2:-}" ]]; then
+                repo="$2"
+                shift 2
+            else
+                echo -e "${RED}Error: --repo requires an owner/repo argument${NC}"
                 exit 1
             fi
             ;;
@@ -150,7 +162,7 @@ else
         elif command -v pwsh >/dev/null 2>&1; then
           out=$(pwsh -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
         fi
-        out=$(echo "$out" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        out=$(echo "$out" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | tr -d '[[:space:]]')
         if [ "$out" != "true" ] && [ "$out" != "1" ]; then
           needs_baseline=true
         fi
@@ -180,9 +192,10 @@ else
         fi
     fi
 
+    release_url="https://github.com/${repo}/releases"
     if [ -z "$requested_version" ]; then
-        url="https://github.com/anomalyco/opencode/releases/latest/download/$filename"
-        specific_version=$(curl -s https://api.github.com/repos/anomalyco/opencode/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        url="${release_url}/latest/download/$filename"
+        specific_version=$(curl -s "https://api.github.com/repos/${repo}/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
             echo -e "${RED}Failed to fetch version information${NC}"
@@ -191,14 +204,14 @@ else
     else
         # Strip leading 'v' if present
         requested_version="${requested_version#v}"
-        url="https://github.com/anomalyco/opencode/releases/download/v${requested_version}/$filename"
+        url="${release_url}/download/v${requested_version}/$filename"
         specific_version=$requested_version
 
         # Verify the release exists before downloading
-        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/anomalyco/opencode/releases/tag/v${requested_version}")
+        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "${release_url}/tag/v${requested_version}")
         if [ "$http_status" = "404" ]; then
             echo -e "${RED}Error: Release v${requested_version} not found${NC}"
-            echo -e "${MUTED}Available releases: https://github.com/anomalyco/opencode/releases${NC}"
+            echo -e "${MUTED}Available releases: ${release_url}${NC}"
             exit 1
         fi
     fi

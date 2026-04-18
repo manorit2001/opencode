@@ -1,0 +1,112 @@
+name: release-artifacts
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v"
+        required: true
+        type: string
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.version || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      release: ${{ steps.release.outputs.release }}
+      tag: ${{ steps.release.outputs.tag }}
+      repo: ${{ steps.release.outputs.repo }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Resolve version
+        id: vars
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            case "${{ inputs.version }}" in
+              v*)
+                echo "Use a version without the leading v" >&2
+                exit 1
+                ;;
+            esac
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "${GITHUB_REF_NAME}" in
+            v*) echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Unable to resolve a release version" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Ensure release exists
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OPENCODE_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          tag="v${OPENCODE_VERSION}"
+          if gh release view "$tag" --json tagName,databaseId,isDraft --repo "$GH_REPO" >/tmp/release.json 2>/dev/null; then
+            echo "Reusing existing release $tag"
+          else
+            ./script/version.ts
+            gh release view "$tag" --json tagName,databaseId,isDraft --repo "$GH_REPO" >/tmp/release.json
+          fi
+
+          release=$(bun -e 'const json = JSON.parse(await Bun.file("/tmp/release.json").text()); console.log(json.databaseId)')
+          tag_name=$(bun -e 'const json = JSON.parse(await Bun.file("/tmp/release.json").text()); console.log(json.tagName)')
+          is_draft=$(bun -e 'const json = JSON.parse(await Bun.file("/tmp/release.json").text()); console.log(json.isDraft ? "true" : "false")')
+
+          if [ "$is_draft" != "true" ]; then
+            gh release edit "$tag_name" --draft=true --repo "$GH_REPO"
+          fi
+
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "repo=$GH_REPO" >> "$GITHUB_OUTPUT"
+
+  build-cli:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-tags: true
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Build and upload release assets
+        run: ./packages/opencode/script/build.ts
+        env:
+          OPENCODE_VERSION: ${{ needs.version.outputs.version }}
+          OPENCODE_RELEASE: "true"
+          GH_REPO: ${{ needs.version.outputs.repo }}
+          GH_TOKEN: ${{ github.token }}
+
+  publish-release:
+    needs:
+      - build-cli
+      - version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ needs.version.outputs.tag }}" --draft=false --repo "${{ needs.version.outputs.repo }}"

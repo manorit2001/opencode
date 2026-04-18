@@ -5,8 +5,10 @@ on:
     branches:
       - wip
 
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -21,11 +23,41 @@ jobs:
       - name: Build CLI
         run: ./packages/opencode/script/build.ts
 
-      - name: Upload build outputs
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-dist
-          path: |
-            packages/opencode/dist
-            install
-          if-no-files-found: error
+      - name: Package artifacts
+        shell: bash
+        run: |
+          rm -f ./*.zip ./*.tar.gz
+          for dir in packages/opencode/dist/*; do
+            [ -d "$dir/bin" ] || continue
+            name=$(basename "$dir")
+            if [[ "$name" == *linux* ]]; then
+              tar -czf "${name}.tar.gz" -C "$dir/bin" .
+              continue
+            fi
+            (
+              cd "$dir/bin"
+              zip -r "$GITHUB_WORKSPACE/${name}.zip" .
+            )
+          done
+
+      - name: Publish wip release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          if gh release view wip --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release edit wip \
+              --title "wip" \
+              --notes "Latest artifacts from ${SHA}" \
+              --prerelease \
+              --repo "$GH_REPO"
+          else
+            gh release create wip \
+              --title "wip" \
+              --notes "Latest artifacts from ${SHA}" \
+              --prerelease \
+              --repo "$GH_REPO"
+          fi
+          gh release upload wip ./install ./*.zip ./*.tar.gz --clobber --repo "$GH_REPO"

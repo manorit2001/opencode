@@ -1,4 +1,4 @@
-name: build-wip
+name: build
 
 on:
   push:
@@ -20,3 +20,12 @@ jobs:
 
       - name: Build CLI
         run: ./packages/opencode/script/build.ts
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-dist
+          path: |
+            packages/opencode/dist
+            install
+          if-no-files-found: error

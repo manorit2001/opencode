@@ -9,9 +9,7 @@
 </p>
 <p align="center">The open source AI coding agent.</p>
 <p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
+  <a href="https://github.com/manorit2001/opencode/actions/workflows/build.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/manorit2001/opencode/build.yml?style=flat-square&branch=wip" /></a>
 </p>
 
 <p align="center">
@@ -46,26 +44,19 @@
 ### Installation
 
 ```bash
-# YOLO
-curl -fsSL https://github.com/anomalyco/opencode/releases/latest/download/install | bash
-
-# Fork
-curl -fsSL https://github.com/you/opencode/releases/latest/download/install | bash -s -- --repo you/opencode
-
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
+# Install from this fork's latest wip release
+curl -fsSL https://github.com/manorit2001/opencode/releases/download/wip/install | bash
 ```
 
 > [!TIP]
-> Remove versions older than 0.1.x before installing.
+> The installer defaults to this fork. Pass `--repo owner/repo` only if you want to install from a different fork.
+
+#### Release Workflow
+
+- Push changes to the `wip` branch.
+- GitHub Actions runs `.github/workflows/build.yml`.
+- The workflow builds the CLI, packages platform artifacts, and uploads them to the `wip` release.
+- Installers and archives are then available from `https://github.com/manorit2001/opencode/releases/tag/wip`.
 
 ### Desktop App (BETA)
 
@@ -96,8 +87,8 @@ The install script respects the following priority order for the installation pa
 
 ```bash
 # Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/anomalyco/opencode/releases/latest/download/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://github.com/anomalyco/opencode/releases/latest/download/install | bash
+OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/manorit2001/opencode/releases/download/wip/install | bash
+XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://github.com/manorit2001/opencode/releases/download/wip/install | bash
 ```
 
 ### Agents
@@ -113,25 +104,15 @@ OpenCode includes two built-in agents you can switch between with the `Tab` key.
 Also included is a **general** subagent for complex searches and multistep tasks.
 This is used internally and can be invoked using `@general` in messages.
 
-Learn more about [agents](https://opencode.ai/docs/agents).
-
-### Documentation
-
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
-
 ### Contributing
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
-
-### Building on OpenCode
-
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
+If you're interested in contributing to this fork, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
 
 ### FAQ
 
 #### How is this different from Claude Code?
 
-It's very similar to Claude Code in terms of capability. Here are the key differences:
+It's very similar in terms of capability. Here are the key differences:
 
 - 100% open source
 - Not coupled to any provider. Although we recommend the models we provide through [OpenCode Zen](https://opencode.ai/zen), OpenCode can be used with Claude, OpenAI, Google, or even local models. As models evolve, the gaps between them will close and pricing will drop, so being provider-agnostic is important.

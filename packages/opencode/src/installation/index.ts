@@ -14,7 +14,7 @@ import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/inst
 import { NpmConfig } from "@opencode-ai/core/npm-config"
 
 const log = Log.create({ service: "installation" })
-const repo = process.env.OPENCODE_REPO ?? "anomalyco/opencode"
+const repo = process.env.OPENCODE_REPO ?? "manorit2001/opencode"
 const release = `https://github.com/${repo}/releases`
 const install = `${release}/latest/download/install`
 

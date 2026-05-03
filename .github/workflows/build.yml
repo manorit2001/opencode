@@ -51,13 +51,13 @@ jobs:
             gh release edit wip \
               --title "wip" \
               --notes "Latest artifacts from ${SHA}" \
-              --prerelease \
+              --latest \
               --repo "$GH_REPO"
           else
             gh release create wip \
               --title "wip" \
               --notes "Latest artifacts from ${SHA}" \
-              --prerelease \
+              --latest \
               --repo "$GH_REPO"
           fi
           gh release upload wip ./install ./*.zip ./*.tar.gz --clobber --repo "$GH_REPO"

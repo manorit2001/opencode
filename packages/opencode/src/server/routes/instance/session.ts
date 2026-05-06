@@ -707,7 +707,7 @@ export const SessionRoutes = lazy(() =>
           return c.json(messages)
         }
 
-        const page = await MessageV2.page({
+        const page = MessageV2.page({
           sessionID,
           limit: query.limit,
           before: query.before,
@@ -755,7 +755,7 @@ export const SessionRoutes = lazy(() =>
       ),
       async (c) => {
         const params = c.req.valid("param")
-        const message = await MessageV2.get({
+        const message = MessageV2.get({
           sessionID: params.sessionID,
           messageID: params.messageID,
         })
@@ -993,7 +993,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const session = await runRequest(
-          "SessionRoutes.command.list.session",
+          "SessionRoutes.command.list",
           c,
           Session.Service.use((svc) => svc.get(sessionID)),
         )
@@ -1065,7 +1065,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const session = await runRequest(
-          "SessionRoutes.mcp.active.session",
+          "SessionRoutes.mcp.active",
           c,
           Session.Service.use((svc) => svc.get(sessionID)),
         )
@@ -1100,7 +1100,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const { sessionID, name } = c.req.valid("param")
         const session = await runRequest(
-          "SessionRoutes.mcp.load.session",
+          "SessionRoutes.mcp.load",
           c,
           Session.Service.use((svc) => svc.get(sessionID)),
         )
@@ -1135,7 +1135,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const { sessionID, name } = c.req.valid("param")
         const session = await runRequest(
-          "SessionRoutes.mcp.unload.session",
+          "SessionRoutes.mcp.unload",
           c,
           Session.Service.use((svc) => svc.get(sessionID)),
         )

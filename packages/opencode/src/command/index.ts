@@ -21,11 +21,11 @@ type State = {
 export const Event = {
   Executed: BusEvent.define(
     "command.executed",
-    z.object({
-      name: z.string(),
-      sessionID: SessionID.zod,
-      arguments: z.string(),
-      messageID: MessageID.zod,
+    Schema.Struct({
+      name: Schema.String,
+      sessionID: SessionID,
+      arguments: Schema.String,
+      messageID: MessageID,
     }),
   ),
 }

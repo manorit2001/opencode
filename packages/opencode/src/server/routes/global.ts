@@ -4,7 +4,6 @@ import { streamSSE } from "hono/streaming"
 import { Effect } from "effect"
 import z from "zod"
 import { BusEvent } from "@/bus/bus-event"
-import { SyncEvent } from "@/sync"
 import { GlobalBus } from "@/bus/global"
 import { Bus } from "@/bus"
 import { AppRuntime } from "@/effect/app-runtime"
@@ -111,7 +110,7 @@ export const GlobalRoutes = lazy(() =>
                       directory: z.string(),
                       project: z.string().optional(),
                       workspace: z.string().optional(),
-                      payload: z.union([...BusEvent.payloads(), ...SyncEvent.payloads()]),
+                      payload: z.unknown(),
                     })
                     .meta({
                       ref: "GlobalEvent",

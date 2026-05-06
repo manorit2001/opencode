@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Instance } from "../../src/project/instance"
-import { Session } from "../../src/session"
+import { Session } from "../../src/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
 import { Server } from "../../src/server/server"
 import { Command } from "../../src/command"
 import { MCP } from "../../src/mcp"
+import { makeRuntime } from "../../src/effect/run-service"
 import { tmpdir } from "../fixture/fixture"
-import { Log } from "../../src/util/log"
+import * as Log from "@opencode-ai/core/util/log"
 
 Log.init({ print: false })
 
@@ -202,6 +203,20 @@ async function withInstance(config: Record<string, any>, fn: () => Promise<void>
   })
 }
 
+const sessionRuntime = makeRuntime(Session.Service, Session.defaultLayer)
+const promptRuntime = makeRuntime(SessionPrompt.Service, SessionPrompt.defaultLayer)
+
+const createSession = () => sessionRuntime.runPromise((session) => session.create({}))
+
+const removeSession = (id: Awaited<ReturnType<typeof createSession>>["id"]) =>
+  sessionRuntime.runPromise((session) => session.remove(id))
+
+const runCommand = (input: Parameters<SessionPrompt.Interface["command"]>[0]) =>
+  promptRuntime.runPromise((prompt) => prompt.command(input))
+
+const runPrompt = (input: Parameters<SessionPrompt.Interface["prompt"]>[0]) =>
+  promptRuntime.runPromise((prompt) => prompt.prompt(input))
+
 describe("session command catalog", () => {
   test("global /command stays base-only and does not connect MCP servers", async () => {
     await withInstance(
@@ -216,7 +231,7 @@ describe("session command catalog", () => {
         const s = state("mcp-commands")
         s.prompts = [{ name: "lazy_prompt", description: "hidden until session load" }]
 
-        const app = Server.Default()
+        const app = Server.Default().app
         const res = await app.request("/command")
         expect(res.status).toBe(200)
         const body = (await res.json()) as Array<{ name: string }>
@@ -246,8 +261,8 @@ describe("session command catalog", () => {
         const s = state("mcp-commands")
         s.prompts = [{ name: "lazy_prompt", description: "session only" }]
 
-        const session = await Session.create({})
-        const app = Server.Default()
+        const session = await createSession()
+        const app = Server.Default().app
 
         const global = await Command.list()
         expect(global.map((item) => item.name)).not.toContain("lazy_prompt")
@@ -293,7 +308,7 @@ describe("session command catalog", () => {
         expect(after.status).toBe(200)
         expect((await after.json()).map((item: { name: string }) => item.name)).not.toContain("lazy_prompt")
 
-        await Session.remove(session.id)
+        await removeSession(session.id)
       },
     )
   })
@@ -311,8 +326,8 @@ describe("session command catalog", () => {
         const s = state("mcp-commands")
         s.prompts = []
 
-        const session = await Session.create({})
-        const app = Server.Default()
+        const session = await createSession()
+        const app = Server.Default().app
 
         const load = await app.request(`/session/${session.id}/mcp/mcp-commands`, { method: "POST" })
         expect(load.status).toBe(200)
@@ -321,7 +336,7 @@ describe("session command catalog", () => {
         expect(active.status).toBe(200)
         expect((await active.json()) as string[]).toEqual(["mcp-commands"])
 
-        await Session.remove(session.id)
+        await removeSession(session.id)
       },
     )
   })
@@ -339,9 +354,9 @@ describe("session command catalog", () => {
         const s = state("mcp-commands")
         s.prompts = [{ name: "lazy_prompt", description: "session only" }]
 
-        const session = await Session.create({})
+        const session = await createSession()
 
-        const msg = await SessionPrompt.command({
+        const msg = await runCommand({
           sessionID: session.id,
           command: "mcp-commands:lazy_prompt",
           arguments: "run now",
@@ -357,7 +372,7 @@ describe("session command catalog", () => {
         const scoped = await Command.list(session.id)
         expect(scoped.map((item) => item.name)).toContain("mcp-commands:lazy_prompt")
 
-        await Session.remove(session.id)
+        await removeSession(session.id)
       },
     )
   })
@@ -375,8 +390,8 @@ describe("session command catalog", () => {
         const s = state("mcp-commands")
         s.tools = [{ name: "lazy_tool", description: "tool", inputSchema: { type: "object", properties: {} } }]
 
-        const session = await Session.create({})
-        const msg = await SessionPrompt.prompt({
+        const session = await createSession()
+        const msg = await runPrompt({
           sessionID: session.id,
           agent: "build",
           noReply: true,
@@ -389,7 +404,7 @@ describe("session command catalog", () => {
         expect(s.listToolsCalls).toBe(0)
         expect(s.listPromptsCalls).toBe(0)
 
-        await Session.remove(session.id)
+        await removeSession(session.id)
       },
     )
   })

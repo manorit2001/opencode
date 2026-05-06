@@ -14,7 +14,6 @@ import { ConfigMCP } from "../config/mcp"
 import * as Log from "@opencode-ai/core/util/log"
 import { NamedError } from "@opencode-ai/core/util/error"
 import z from "zod/v4"
-import { Installation } from "../installation"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { withTimeout } from "@/util/timeout"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
@@ -253,10 +252,11 @@ export const layer = Layer.effect(
       clients: Record<string, MCPClient>
       defs: Record<string, MCPToolDef[]>
       config: Record<string, McpEntry>
+      bridge: EffectBridge.Shape
       timeout?: number
       sessions: Map<string, Set<string>>
       refs: Map<string, Set<string>>
-      pending: Map<string, Promise<Status>>
+      pending: Map<string, Effect.Effect<Status>>
     }
 
     /**
@@ -506,6 +506,7 @@ export const layer = Layer.effect(
           clients: {},
           defs: {},
           config,
+          bridge,
           timeout: cfg.experimental?.mcp_timeout,
           sessions: new Map(),
           refs: new Map(),
@@ -523,17 +524,6 @@ export const layer = Layer.effect(
 
               if (mcp.enabled === false) {
                 s.status[key] = { status: "disabled" }
-                return
-              }
-
-              const result = yield* create(key, mcp).pipe(Effect.catch(() => Effect.void))
-              if (!result) return
-
-              s.status[key] = result.status
-              if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
               }
             }),
           { concurrency: "unbounded" },
@@ -582,7 +572,7 @@ export const layer = Layer.effect(
 
       s.clients[name] = result.mcpClient
       s.defs[name] = result.defs
-      watch(s, name, result.mcpClient, mcp.timeout)
+      watch(s, name, result.mcpClient, s.bridge, mcp.timeout)
       return result.status
     }
 
@@ -617,7 +607,11 @@ export const layer = Layer.effect(
         return result.status
       }
 
-      return yield* store(s, name, result, mcp)
+      if (s.clients[name]) {
+        yield* closeClient(s, name)
+      }
+
+      return store(s, name, result, mcp)
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCP.Info) {
@@ -684,24 +678,29 @@ export const layer = Layer.effect(
       const current = s.status[name]
       if (current?.status === "connected" && s.clients[name] && s.defs[name]) return current
 
-      const pending = s.pending.get(name)
-      if (pending) return yield* Effect.promise(() => pending)
-
       const mcp = yield* getMcpConfig(name)
       if (!mcp) return { status: "disabled" } as Status
+      if (mcp.enabled === false) {
+        const disabled = { status: "disabled" } as Status
+        s.status[name] = disabled
+        return disabled
+      }
 
-      const task = Effect.runPromise(
-        Effect.gen(function* () {
-          if (s.clients[name]) yield* closeClient(s, name)
-          const result = yield* create(name, mcp)
-          return yield* store(s, name, { mcpClient: result.mcpClient, status: result.status, defs: result.defs }, mcp)
-        }),
-      ).finally(() => {
-        s.pending.delete(name)
-      })
+      const pending = s.pending.get(name)
+      if (pending) return yield* pending
 
-      s.pending.set(name, task)
-      return yield* Effect.promise(() => task)
+      const cached = yield* Effect.cached(
+        Effect.scoped(
+          Effect.gen(function* () {
+            if (s.clients[name]) yield* closeClient(s, name)
+            const result = yield* create(name, mcp)
+            return store(s, name, { mcpClient: result.mcpClient, status: result.status, defs: result.defs }, mcp)
+          }).pipe(Effect.ensuring(Effect.sync(() => s.pending.delete(name)))),
+        ),
+      )
+
+      s.pending.set(name, cached)
+      return yield* cached
     })
 
     const load = Effect.fn("MCP.load")(function* (sessionID: SessionID, name: string) {
@@ -926,7 +925,7 @@ export const layer = Layer.effect(
 
         const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* store(s, mcpName, { mcpClient: client, status: { status: "connected" }, defs: listed }, mcpConfig)
+        return store(s, mcpName, { mcpClient: client, status: { status: "connected" }, defs: listed }, mcpConfig)
       }
 
       log.info("opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
@@ -988,7 +987,17 @@ export const layer = Layer.effect(
       const mcpConfig = yield* getMcpConfig(mcpName)
       if (!mcpConfig) return { status: "failed", error: "MCP config not found after auth" } as Status
 
-      return yield* createAndStore(mcpName, mcpConfig)
+      const created = yield* create(mcpName, mcpConfig)
+      if (!created.mcpClient) {
+        return created.status
+      }
+
+      const s = yield* InstanceState.get(state)
+      if (s.clients[mcpName]) {
+        yield* closeClient(s, mcpName)
+      }
+
+      return store(s, mcpName, created, mcpConfig)
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {
@@ -1002,6 +1011,11 @@ export const layer = Layer.effect(
       const mcpConfig = yield* getMcpConfig(mcpName)
       if (!mcpConfig) return false
       return mcpConfig.type === "remote" && mcpConfig.oauth !== false
+    })
+
+    const hasStoredTokens = Effect.fn("MCP.hasStoredTokens")(function* (mcpName: string) {
+      const entry = yield* auth.get(mcpName)
+      return Boolean(entry?.tokens)
     })
 
     const getAuthStatus = Effect.fn("MCP.getAuthStatus")(function* (mcpName: string) {
@@ -1050,7 +1064,21 @@ export const defaultLayer = layer.pipe(
 
 const { runPromise } = makeRuntime(Service, defaultLayer)
 
+export const status = async () => runPromise((svc) => svc.status())
+
+export const clients = async () => runPromise((svc) => svc.clients())
+
+export const tools = async () => runPromise((svc) => svc.tools())
+
+export const resources = async () => runPromise((svc) => svc.resources())
+
+export const add = async (name: string, mcp: ConfigMCP.Info) => runPromise((svc) => svc.add(name, mcp))
+
+export const ensure = async (name: string) => runPromise((svc) => svc.ensure(name))
+
 export const connect = async (name: string) => runPromise((svc) => svc.connect(name))
+
+export const disconnect = async (name: string) => runPromise((svc) => svc.disconnect(name))
 
 export const prompts = async (sessionID?: SessionID) => runPromise((svc) => svc.prompts(sessionID))
 

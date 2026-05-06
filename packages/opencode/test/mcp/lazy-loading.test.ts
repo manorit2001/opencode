@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Instance } from "../../src/project/instance"
 import { MCP } from "../../src/mcp/index"
 import { tmpdir } from "../fixture/fixture"
-import { Log } from "../../src/util/log"
+import * as Log from "@opencode-ai/core/util/log"
 
 Log.init({ print: false })
 

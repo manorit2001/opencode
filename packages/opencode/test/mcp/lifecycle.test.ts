@@ -211,7 +211,7 @@ const { tmpdir } = await import("../fixture/fixture")
 
 function withInstance(
   config: Record<string, unknown>,
-  fn: (mcp: MCPNS.Interface) => Effect.Effect<void, unknown, never>,
+  fn: (mcp: MCPNS.Interface) => Effect.Effect<void, unknown, never> | Promise<void>,
 ) {
   return async () => {
     await using tmp = await tmpdir({
@@ -229,7 +229,12 @@ function withInstance(
     await WithInstance.provide({
       directory: tmp.path,
       fn: async () => {
-        await Effect.runPromise(MCP.Service.use(fn).pipe(Effect.provide(MCP.defaultLayer)))
+        await Effect.runPromise(
+          MCP.Service.use((mcp) => {
+            const result = fn(mcp)
+            return result instanceof Promise ? Effect.promise(() => result) : result
+          }).pipe(Effect.provide(MCP.defaultLayer)),
+        )
         // dispose instance to clean up state between tests
         await InstanceRuntime.disposeInstance(Instance.current)
       },

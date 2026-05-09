@@ -3,6 +3,7 @@ import {
   parseJwtClaims,
   extractAccountIdFromClaims,
   extractAccountId,
+  resolveCodexApiEndpoint,
   type IdTokenClaims,
 } from "../../src/plugin/codex"
 
@@ -13,6 +14,26 @@ function createTestJwt(payload: object): string {
 }
 
 describe("plugin.codex", () => {
+  describe("resolveCodexApiEndpoint", () => {
+    test("uses the upstream Codex endpoint by default", () => {
+      expect(resolveCodexApiEndpoint().toString()).toBe("https://chatgpt.com/backend-api/codex/responses")
+    })
+
+    test("maps a baseURL to its responses endpoint", () => {
+      expect(resolveCodexApiEndpoint("http://127.0.0.1:8787/v1").toString()).toBe("http://127.0.0.1:8787/v1/responses")
+      expect(resolveCodexApiEndpoint("http://127.0.0.1:8787/v1/").toString()).toBe("http://127.0.0.1:8787/v1/responses")
+    })
+
+    test("keeps explicit response-style endpoints unchanged", () => {
+      expect(resolveCodexApiEndpoint("http://127.0.0.1:8787/v1/responses").toString()).toBe(
+        "http://127.0.0.1:8787/v1/responses",
+      )
+      expect(resolveCodexApiEndpoint("http://127.0.0.1:8787/chat/completions").toString()).toBe(
+        "http://127.0.0.1:8787/chat/completions",
+      )
+    })
+  })
+
   describe("parseJwtClaims", () => {
     test("parses valid JWT with claims", () => {
       const payload = { email: "test@example.com", chatgpt_account_id: "acc-123" }

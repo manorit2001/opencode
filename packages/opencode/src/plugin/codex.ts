@@ -95,6 +95,14 @@ export function extractAccountId(tokens: TokenResponse): string | undefined {
   return undefined
 }
 
+export function resolveCodexApiEndpoint(baseURL?: string): URL {
+  if (!baseURL) return new URL(CODEX_API_ENDPOINT)
+  const resolved = new URL(baseURL)
+  if (resolved.pathname.endsWith("/responses") || resolved.pathname.endsWith("/chat/completions")) return resolved
+  resolved.pathname = `${resolved.pathname.replace(/\/$/, "")}/responses`
+  return resolved
+}
+
 function buildAuthorizeUrl(redirectUri: string, pkce: PkceCodes, state: string): string {
   const params = new URLSearchParams({
     response_type: "code",
@@ -401,9 +409,10 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
     },
     auth: {
       provider: "openai",
-      async loader(getAuth) {
+      async loader(getAuth, provider) {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
+        const codexApiEndpoint = resolveCodexApiEndpoint(provider.options?.baseURL)
 
         return {
           apiKey: OAUTH_DUMMY_KEY,
@@ -477,7 +486,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                 : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
             const url =
               parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
-                ? new URL(CODEX_API_ENDPOINT)
+                ? new URL(codexApiEndpoint)
                 : parsed
 
             return fetch(url, {

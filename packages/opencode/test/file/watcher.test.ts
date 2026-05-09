@@ -6,10 +6,12 @@ import { ConfigProvider, Deferred, Effect, Layer, ManagedRuntime, Option } from 
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 import { Bus } from "../../src/bus"
 import { Config } from "@/config/config"
+import { AppRuntime } from "@/effect/app-runtime"
 import { FileWatcher } from "../../src/file/watcher"
 import { Git } from "../../src/git"
-import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
+import { Global } from "@opencode-ai/core/global"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 // Native @parcel/watcher bindings aren't reliably available in CI (missing on Linux, flaky on Windows)
 const describeWatcher = FileWatcher.hasNativeBinding() && !process.env.CI ? describe : describe.skip
@@ -32,11 +34,12 @@ function withWatcher<E>(directory: string, body: Effect.Effect<void, E>) {
   return WithInstance.provide({
     directory,
     fn: async () => {
-      const layer: Layer.Layer<FileWatcher.Service, never, never> = FileWatcher.layer.pipe(
+      const layer = FileWatcher.layer.pipe(
+        Layer.provide(AppFileSystem.defaultLayer),
         Layer.provide(Config.defaultLayer),
         Layer.provide(Git.defaultLayer),
         Layer.provide(watcherConfigLayer),
-      )
+      ) as Layer.Layer<FileWatcher.Service, never, never>
       const rt = ManagedRuntime.make(layer)
       try {
         await rt.runPromise(FileWatcher.Service.use((s) => s.init()))
@@ -49,7 +52,7 @@ function withWatcher<E>(directory: string, body: Effect.Effect<void, E>) {
   })
 }
 
-function listen(directory: string, check: (evt: WatcherEvent) => boolean, hit: (evt: WatcherEvent) => void) {
+function listen(check: (evt: WatcherEvent) => boolean, hit: (evt: WatcherEvent) => void) {
   let done = false
 
   const unsub = Bus.subscribe(FileWatcher.Event.Updated, (evt) => {
@@ -65,12 +68,12 @@ function listen(directory: string, check: (evt: WatcherEvent) => boolean, hit: (
   }
 }
 
-function wait(directory: string, check: (evt: WatcherEvent) => boolean) {
+function wait(check: (evt: WatcherEvent) => boolean) {
   return Effect.gen(function* () {
     const deferred = yield* Deferred.make<WatcherEvent>()
     const cleanup = yield* Effect.sync(() => {
       let off = () => {}
-      off = listen(directory, check, (evt) => {
+      off = listen(check, (evt) => {
         off()
         Deferred.doneUnsafe(deferred, Effect.succeed(evt))
       })
@@ -80,9 +83,9 @@ function wait(directory: string, check: (evt: WatcherEvent) => boolean) {
   })
 }
 
-function nextUpdate<E>(directory: string, check: (evt: WatcherEvent) => boolean, trigger: Effect.Effect<void, E>) {
+function nextUpdate<E>(check: (evt: WatcherEvent) => boolean, trigger: Effect.Effect<void, E>) {
   return Effect.acquireUseRelease(
-    wait(directory, check),
+    wait(check),
     ({ deferred }) =>
       Effect.gen(function* () {
         yield* trigger
@@ -92,15 +95,9 @@ function nextUpdate<E>(directory: string, check: (evt: WatcherEvent) => boolean,
   )
 }
 
-/** Effect that asserts no matching event arrives within `ms`. */
-function noUpdate<E>(
-  directory: string,
-  check: (evt: WatcherEvent) => boolean,
-  trigger: Effect.Effect<void, E>,
-  ms = 500,
-) {
+function noUpdate<E>(check: (evt: WatcherEvent) => boolean, trigger: Effect.Effect<void, E>, ms = 500) {
   return Effect.acquireUseRelease(
-    wait(directory, check),
+    wait(check),
     ({ deferred }) =>
       Effect.gen(function* () {
         yield* trigger
@@ -116,7 +113,6 @@ function ready(directory: string) {
 
   return Effect.gen(function* () {
     yield* nextUpdate(
-      directory,
       (evt) => evt.file === file && evt.event === "add",
       Effect.promise(() => fs.writeFile(file, "ready")),
     ).pipe(Effect.ensuring(Effect.promise(() => fs.rm(file, { force: true }).catch(() => undefined))), Effect.asVoid)
@@ -132,7 +128,6 @@ function ready(directory: string) {
     const branch = `watch-${Math.random().toString(36).slice(2)}`
     const hash = yield* Effect.promise(() => $`git rev-parse HEAD`.cwd(directory).quiet().text())
     yield* nextUpdate(
-      directory,
       (evt) => evt.file === head && evt.event !== "unlink",
       Effect.promise(async () => {
         await fs.writeFile(path.join(directory, ".git", "refs", "heads", branch), hash.trim() + "\n")
@@ -142,6 +137,16 @@ function ready(directory: string) {
   })
 }
 
+async function waitFor<A>(read: () => Promise<A>, check: (value: A) => boolean, timeout = 5_000) {
+  const end = Date.now() + timeout
+  for (;;) {
+    const value = await read()
+    if (check(value)) return value
+    if (Date.now() >= end) throw new Error("timed out waiting for watcher-driven config reload")
+    await Bun.sleep(50)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -149,6 +154,65 @@ function ready(directory: string) {
 describeWatcher("FileWatcher", () => {
   afterEach(async () => {
     await disposeAllInstances()
+  })
+
+  test("reloads config when global opencode config changes", async () => {
+    await using globalTmp = await tmpdir()
+    await using tmp = await tmpdir()
+    const prev = Global.Path.config
+    ;(Global.Path as { config: string }).config = globalTmp.path
+
+    const globalConfig = path.join(globalTmp.path, "opencode.jsonc")
+    const initial = "https://before.example/v1"
+    const updated = "https://after.example/v1"
+
+    await Bun.write(
+      globalConfig,
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        provider: {
+          openai: {
+            options: {
+              baseURL: initial,
+            },
+          },
+        },
+      }),
+    )
+    await disposeAllInstances()
+
+    try {
+      await withWatcher(
+        tmp.path,
+        Effect.promise(async () => {
+          const readBaseURL = async () => {
+            const config = await AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
+            return config.provider?.openai?.options?.baseURL
+          }
+
+          expect(await readBaseURL()).toBe(initial)
+
+          await Bun.write(
+            globalConfig,
+            JSON.stringify({
+              $schema: "https://opencode.ai/config.json",
+              provider: {
+                openai: {
+                  options: {
+                    baseURL: updated,
+                  },
+                },
+              },
+            }),
+          )
+
+          expect(await waitFor(readBaseURL, (value) => value === updated)).toBe(updated)
+        }),
+      )
+    } finally {
+      ;(Global.Path as { config: string }).config = prev
+      await disposeAllInstances()
+    }
   })
 
   test("publishes root create, update, and delete events", async () => {
@@ -164,7 +228,7 @@ describeWatcher("FileWatcher", () => {
     await withWatcher(
       dir,
       Effect.forEach(cases, ({ event, trigger }) =>
-        nextUpdate(dir, (evt) => evt.file === file && evt.event === event, trigger).pipe(
+        nextUpdate((evt) => evt.file === file && evt.event === event, trigger).pipe(
           Effect.tap((evt) => Effect.sync(() => expect(evt).toEqual({ file, event }))),
         ),
       ),
@@ -179,7 +243,6 @@ describeWatcher("FileWatcher", () => {
     await withWatcher(
       dir,
       nextUpdate(
-        dir,
         (e) => e.file === file && e.event === "add",
         Effect.promise(() => fs.writeFile(file, "plain")),
       ).pipe(Effect.tap((evt) => Effect.sync(() => expect(evt).toEqual({ file, event: "add" })))),
@@ -199,7 +262,6 @@ describeWatcher("FileWatcher", () => {
       fn: () =>
         Effect.runPromise(
           noUpdate(
-            tmp.path,
             (e) => e.file === file,
             Effect.promise(() => fs.writeFile(file, "gone")),
           ),
@@ -215,7 +277,6 @@ describeWatcher("FileWatcher", () => {
     await withWatcher(
       tmp.path,
       noUpdate(
-        tmp.path,
         (e) => e.file === gitIndex,
         Effect.promise(async () => {
           await fs.writeFile(edit, "a")
@@ -234,7 +295,6 @@ describeWatcher("FileWatcher", () => {
     await withWatcher(
       tmp.path,
       nextUpdate(
-        tmp.path,
         (evt) => evt.file === head && evt.event !== "unlink",
         Effect.promise(() => fs.writeFile(head, `ref: refs/heads/${branch}\n`)),
       ).pipe(

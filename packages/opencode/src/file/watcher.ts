@@ -4,7 +4,6 @@ import { createWrapper } from "@parcel/watcher/wrapper"
 import type ParcelWatcher from "@parcel/watcher"
 import { readdir } from "fs/promises"
 import path from "path"
-import z from "zod"
 import { Bus } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
@@ -12,6 +11,8 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { Git } from "@/git"
 import { lazy } from "@/util/lazy"
 import { Config } from "@/config/config"
+import { ConfigPaths } from "@/config/paths"
+import { disposeInstance } from "@/effect/instance-registry"
 import { FileIgnore } from "./ignore"
 import { Protected } from "./protected"
 import * as Log from "@opencode-ai/core/util/log"
@@ -95,16 +96,57 @@ export const layer = Layer.effect(
             Effect.promise(() => Promise.allSettled(subs.map((sub) => sub.unsubscribe()))),
           )
 
+          const cfg = yield* config.get()
+          const cfgIgnores = cfg.watcher?.ignore ?? []
+          const configDirs = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
+          const experimentalWatcher = yield* Flag.OPENCODE_EXPERIMENTAL_FILEWATCHER
+          const subscribed = new Set<string>()
+          const configFiles = new Set(
+            [ctx.directory, ...configDirs].flatMap((dir) => [
+              path.join(dir, "config.json"),
+              ...ConfigPaths.fileInDirectory(dir, "opencode"),
+            ]),
+          )
+          let reloadPending = false
+          const reload = (file: string) => {
+            if (!configFiles.has(file) || reloadPending) return
+            reloadPending = true
+            void Effect.runPromise(
+              Effect.gen(function* () {
+                log.info("config changed, disposing instance", { directory: ctx.directory, file })
+                yield* config.invalidate()
+                yield* Effect.promise(() => disposeInstance(ctx.directory))
+              }),
+            )
+              .then(undefined, (error) => {
+                log.error("failed to dispose instance after config change", { directory: ctx.directory, file, error })
+              })
+              .finally(() => {
+                reloadPending = false
+              })
+          }
+
           const cb: ParcelWatcher.SubscribeCallback = InstanceState.bind((err, evts) => {
             if (err) return
             for (const evt of evts) {
-              if (evt.type === "create") void Bus.publish(Event.Updated, { file: evt.path, event: "add" })
-              if (evt.type === "update") void Bus.publish(Event.Updated, { file: evt.path, event: "change" })
-              if (evt.type === "delete") void Bus.publish(Event.Updated, { file: evt.path, event: "unlink" })
+              if (evt.type === "create") {
+                reload(evt.path)
+                void Bus.publish(Event.Updated, { file: evt.path, event: "add" })
+              }
+              if (evt.type === "update") {
+                reload(evt.path)
+                void Bus.publish(Event.Updated, { file: evt.path, event: "change" })
+              }
+              if (evt.type === "delete") {
+                reload(evt.path)
+                void Bus.publish(Event.Updated, { file: evt.path, event: "unlink" })
+              }
             }
           })
 
           const subscribe = (dir: string, ignore: string[]) => {
+            if (subscribed.has(dir)) return Effect.void
+            subscribed.add(dir)
             const pending = w.subscribe(dir, cb, { ignore, backend })
             return Effect.gen(function* () {
               const sub = yield* Effect.promise(() => pending)
@@ -119,10 +161,13 @@ export const layer = Layer.effect(
             )
           }
 
-          const cfg = yield* config.get()
-          const cfgIgnores = cfg.watcher?.ignore ?? []
+          yield* Effect.forEach(
+            experimentalWatcher ? configDirs : [ctx.directory, ...configDirs],
+            (dir) => Effect.forkScoped(subscribe(dir, [])),
+            { discard: true },
+          )
 
-          if (yield* Flag.OPENCODE_EXPERIMENTAL_FILEWATCHER) {
+          if (experimentalWatcher) {
             yield* Effect.forkScoped(
               subscribe(ctx.directory, [...FileIgnore.PATTERNS, ...cfgIgnores, ...protecteds(ctx.directory)]),
             )
@@ -149,9 +194,7 @@ export const layer = Layer.effect(
     )
 
     return Service.of({
-      init: Effect.fn("FileWatcher.init")(function* () {
-        yield* InstanceState.get(state)
-      }),
+      init: (() => InstanceState.get(state).pipe(Effect.asVoid)) as () => Effect.Effect<void, never, never>,
     })
   }),
 )

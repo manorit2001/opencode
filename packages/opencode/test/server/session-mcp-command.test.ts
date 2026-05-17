@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-import { Instance } from "../../src/project/instance"
+import { AppRuntime } from "../../src/effect/app-runtime"
 import { Session } from "../../src/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
 import { Server } from "../../src/server/server"
 import { Command } from "../../src/command"
 import { MCP } from "../../src/mcp"
 import { makeRuntime } from "../../src/effect/run-service"
+import { InstanceStore } from "../../src/project/instance-store"
+import { WithInstance } from "../../src/project/with-instance"
 import { tmpdir } from "../fixture/fixture"
 import * as Log from "@opencode-ai/core/util/log"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 Log.init({ print: false })
 
@@ -166,6 +169,7 @@ mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
 }))
 
 beforeEach(() => {
+  Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = false
   states.clear()
   last = undefined
   connectFail = false
@@ -176,7 +180,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  await Instance.disposeAll()
+  await AppRuntime.runPromise(InstanceStore.Service.use((store) => store.disposeAll()))
 })
 
 async function withInstance(config: Record<string, any>, fn: () => Promise<void>) {
@@ -197,9 +201,9 @@ async function withInstance(config: Record<string, any>, fn: () => Promise<void>
     },
   })
 
-  await Instance.provide({
+  await WithInstance.provide({
     directory: tmp.path,
-    fn: fn,
+    fn,
   })
 }
 

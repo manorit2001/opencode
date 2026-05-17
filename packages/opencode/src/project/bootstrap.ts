@@ -12,6 +12,7 @@ import { ShareNext } from "@/share/share-next"
 import { Effect, Layer } from "effect"
 import { Config } from "@/config/config"
 import { Service } from "./bootstrap-service"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -54,19 +55,18 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer: Layer.Layer<Service> = layer.pipe(
-  Layer.provide([
-    Bus.layer,
-    Config.defaultLayer,
-    File.defaultLayer,
-    FileWatcher.defaultLayer,
-    Format.defaultLayer,
-    LSP.defaultLayer,
-    Plugin.defaultLayer,
-    Project.defaultLayer,
-    ShareNext.defaultLayer,
-    Snapshot.defaultLayer,
-    Vcs.defaultLayer,
-  ]),
+  Layer.provide(Bus.layer),
+  Layer.provide(Config.defaultLayer),
+  Layer.provide(File.defaultLayer),
+  Layer.provide(FileWatcher.defaultLayer),
+  Layer.provide(Format.defaultLayer),
+  Layer.provide(LSP.defaultLayer),
+  Layer.provide(Plugin.defaultLayer),
+  Layer.provide(Project.defaultLayer),
+  Layer.provide(ShareNext.defaultLayer),
+  Layer.provide(Snapshot.defaultLayer),
+  Layer.provide(Vcs.defaultLayer),
+  Layer.provide(AppFileSystem.defaultLayer),
 )
 
 export * as InstanceBootstrap from "./bootstrap"

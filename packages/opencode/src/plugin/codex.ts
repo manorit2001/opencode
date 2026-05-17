@@ -412,7 +412,10 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
       async loader(getAuth, provider) {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
-        const codexApiEndpoint = resolveCodexApiEndpoint(provider.options?.baseURL)
+        const codexApiEndpoint =
+          typeof provider.options?.baseURL === "string"
+            ? resolveCodexApiEndpoint(provider.options.baseURL)
+            : resolveCodexApiEndpoint(undefined)
 
         return {
           apiKey: OAUTH_DUMMY_KEY,

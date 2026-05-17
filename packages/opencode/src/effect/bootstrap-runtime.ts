@@ -12,6 +12,7 @@ import { Bus } from "@/bus"
 import { Config } from "@/config/config"
 import * as Observability from "@opencode-ai/core/effect/observability"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 export const BootstrapLayer = Layer.mergeAll(
   Config.defaultLayer,
@@ -24,6 +25,6 @@ export const BootstrapLayer = Layer.mergeAll(
   Vcs.defaultLayer,
   Snapshot.defaultLayer,
   Bus.defaultLayer,
-).pipe(Layer.provide(Observability.layer))
+).pipe(Layer.provide(AppFileSystem.defaultLayer), Layer.provide(Observability.layer))
 
 export const BootstrapRuntime = ManagedRuntime.make(BootstrapLayer, { memoMap })

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-import { Instance } from "../../src/project/instance"
+import { AppRuntime } from "../../src/effect/app-runtime"
 import { MCP } from "../../src/mcp/index"
+import { InstanceStore } from "../../src/project/instance-store"
+import { WithInstance } from "../../src/project/with-instance"
 import { tmpdir } from "../fixture/fixture"
 import * as Log from "@opencode-ai/core/util/log"
 
@@ -171,7 +173,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  await Instance.disposeAll()
+  await AppRuntime.runPromise(InstanceStore.Service.use((store) => store.disposeAll()))
 })
 
 async function withInstance(config: Record<string, any>, fn: () => Promise<void>) {
@@ -192,9 +194,9 @@ async function withInstance(config: Record<string, any>, fn: () => Promise<void>
     },
   })
 
-  await Instance.provide({
+  await WithInstance.provide({
     directory: tmp.path,
-    fn: fn,
+    fn,
   })
 }
 

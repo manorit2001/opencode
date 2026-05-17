@@ -49,7 +49,7 @@ import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@/server/cors
 import { serveUIEffect } from "@/server/shared/ui"
 import { ServerAuth } from "@/server/auth"
 import { InstanceHttpApi, RootHttpApi } from "./api"
-import { authorizationLayer, authorizationRouterMiddleware } from "./middleware/authorization"
+import { authorizationLayer, authorizationRouterMiddleware, authorizeRawRequest } from "./middleware/authorization"
 import { EventApi, eventHandlers } from "./event"
 import { configHandlers } from "./handlers/config"
 import { controlHandlers } from "./handlers/control"
@@ -96,7 +96,9 @@ const cors = (corsOptions?: CorsOptions) =>
     { global: true },
   )
 
-const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(Layer.provide([controlHandlers, globalHandlers]))
+const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
+  Layer.provide(Layer.mergeAll(controlHandlers, globalHandlers)),
+)
 const instanceRouterLayer = authorizationRouterMiddleware
   .combine(instanceRouterMiddleware)
   .combine(workspaceRouterMiddleware)
@@ -105,95 +107,103 @@ const eventApiRoutes = HttpApiBuilder.layer(EventApi).pipe(
   Layer.provide(eventHandlers),
   Layer.provide(instanceRouterLayer),
 )
+const instanceApiMiddleware = Layer.mergeAll(
+  authorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer)),
+  workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
+  instanceContextLayer,
+)
 const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
-  Layer.provide([
-    configHandlers,
-    experimentalHandlers,
-    fileHandlers,
-    instanceHandlers,
-    mcpHandlers,
-    projectHandlers,
-    ptyHandlers,
-    questionHandlers,
-    permissionHandlers,
-    providerHandlers,
-    sessionHandlers,
-    syncHandlers,
-    v2Handlers,
-    tuiHandlers,
-    workspaceHandlers,
-  ]),
+  Layer.provide(
+    Layer.mergeAll(
+      configHandlers,
+      experimentalHandlers,
+      fileHandlers,
+      instanceHandlers,
+      mcpHandlers,
+      projectHandlers,
+      ptyHandlers,
+      questionHandlers,
+      permissionHandlers,
+      providerHandlers,
+      sessionHandlers,
+      syncHandlers,
+      v2Handlers,
+      tuiHandlers,
+      workspaceHandlers,
+    ),
+  ),
+  Layer.provide(instanceApiMiddleware),
 )
 
 const rawInstanceRoutes = Layer.mergeAll(ptyConnectRoute).pipe(Layer.provide(instanceRouterLayer))
-const instanceRoutes = Layer.mergeAll(rawInstanceRoutes, instanceApiRoutes).pipe(
-  Layer.provide([
-    authorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer)),
-    workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
-    instanceContextLayer,
-  ]),
-)
+const instanceRoutes = Layer.mergeAll(rawInstanceRoutes, instanceApiRoutes)
 
 const uiRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
-    const fs = yield* AppFileSystem.Service
-    const client = yield* HttpClient.HttpClient
-    yield* router.add("*", "/*", (request) => serveUIEffect(request, { fs, client }))
+    yield* router.add("*", "/*", (request) =>
+      Effect.gen(function* () {
+        const fs = yield* AppFileSystem.Service
+        const client = yield* HttpClient.HttpClient
+        const config = yield* ServerAuth.Config
+        return yield* authorizeRawRequest(serveUIEffect(request, { fs, client }), request, config)
+      }),
+    )
   }),
-).pipe(Layer.provide(authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))))
+)
 
 export function createRoutes(corsOptions?: CorsOptions) {
   return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, uiRoute).pipe(
-    Layer.provide([
-      errorLayer,
-      cors(corsOptions),
-      runtime,
-      Account.defaultLayer,
-      Agent.defaultLayer,
-      Auth.defaultLayer,
-      Command.defaultLayer,
-      Config.defaultLayer,
-      File.defaultLayer,
-      FileWatcher.defaultLayer,
-      Format.defaultLayer,
-      LSP.defaultLayer,
-      Installation.defaultLayer,
-      MCP.defaultLayer,
-      ModelsDev.defaultLayer,
-      Permission.defaultLayer,
-      Plugin.defaultLayer,
-      Project.defaultLayer,
-      ProviderAuth.defaultLayer,
-      Provider.defaultLayer,
-      Pty.defaultLayer,
-      PtyTicket.defaultLayer,
-      Question.defaultLayer,
-      Ripgrep.defaultLayer,
-      Session.defaultLayer,
-      SessionCompaction.defaultLayer,
-      SessionPrompt.defaultLayer,
-      SessionRevert.defaultLayer,
-      SessionShare.defaultLayer,
-      SessionRunState.defaultLayer,
-      SessionStatus.defaultLayer,
-      SessionSummary.defaultLayer,
-      ShareNext.defaultLayer,
-      Snapshot.defaultLayer,
-      SyncEvent.defaultLayer,
-      Skill.defaultLayer,
-      Todo.defaultLayer,
-      ToolRegistry.defaultLayer,
-      Vcs.defaultLayer,
-      Workspace.defaultLayer,
-      Worktree.appLayer,
-      Bus.layer,
-      AppFileSystem.defaultLayer,
-      FetchHttpClient.layer,
-      HttpServer.layerServices,
-    ]),
-    Layer.provideMerge(Layer.succeed(CorsConfig)(corsOptions)),
-    Layer.provideMerge(InstanceLayer.layer),
-    Layer.provideMerge(Observability.layer),
+    Layer.provide(
+      Layer.mergeAll(
+        errorLayer,
+        cors(corsOptions),
+        runtime,
+        Account.defaultLayer,
+        Agent.defaultLayer,
+        Auth.defaultLayer,
+        Command.defaultLayer,
+        Config.defaultLayer,
+        File.defaultLayer,
+        FileWatcher.defaultLayer,
+        Format.defaultLayer,
+        LSP.defaultLayer,
+        Installation.defaultLayer,
+        MCP.defaultLayer,
+        ModelsDev.defaultLayer,
+        Permission.defaultLayer,
+        Plugin.defaultLayer,
+        Project.defaultLayer,
+        ProviderAuth.defaultLayer,
+        Provider.defaultLayer,
+        Pty.defaultLayer,
+        PtyTicket.defaultLayer,
+        Question.defaultLayer,
+        Ripgrep.defaultLayer,
+        Session.defaultLayer,
+        SessionCompaction.defaultLayer,
+        SessionPrompt.defaultLayer,
+        SessionRevert.defaultLayer,
+        SessionShare.defaultLayer,
+        SessionRunState.defaultLayer,
+        SessionStatus.defaultLayer,
+        SessionSummary.defaultLayer,
+        ShareNext.defaultLayer,
+        Snapshot.defaultLayer,
+        SyncEvent.defaultLayer,
+        Skill.defaultLayer,
+        Todo.defaultLayer,
+        ToolRegistry.defaultLayer,
+        Vcs.defaultLayer,
+        Workspace.defaultLayer,
+        Worktree.appLayer,
+        Bus.layer,
+        FetchHttpClient.layer,
+        HttpServer.layerServices,
+      ).pipe(Layer.provide(AppFileSystem.defaultLayer)),
+    ),
+    Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
+    Layer.provide(InstanceLayer.layer),
+    Layer.provide(Observability.layer),
   )
 }
 

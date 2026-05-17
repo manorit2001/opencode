@@ -2,9 +2,6 @@ import { Workspace } from "@/control-plane/workspace"
 import { WorkspaceAdapterEntry } from "@/control-plane/types"
 import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../middleware/authorization"
-import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 
 const root = "/experimental/workspace"
@@ -87,10 +84,7 @@ export const WorkspaceApi = HttpApi.make("workspace")
           }),
         ),
       )
-      .annotateMerge(OpenApi.annotations({ title: "workspace", description: "Experimental HttpApi workspace routes." }))
-      .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      .annotateMerge(OpenApi.annotations({ title: "workspace", description: "Experimental HttpApi workspace routes." })),
   )
   .annotateMerge(
     OpenApi.annotations({

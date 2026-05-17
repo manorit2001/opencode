@@ -18,12 +18,12 @@
  * - `.mutating()` tells parity mode to run Effect and Hono in separate isolated contexts
  *   so destructive routes compare equivalent fresh setups instead of sharing one DB.
  */
-import { Cause, ConfigProvider, Effect, Layer } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { Cause, Context, Effect } from "effect"
 import { OpenApi } from "effect/unstable/httpapi"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { TestLLMServer } from "../test/lib/llm-server"
 import type { Config } from "../src/config/config"
+import type { AppServices } from "../src/effect/app-runtime"
 import { MessageID, PartID, type SessionID } from "../src/session/schema"
 import { ModelID, ProviderID } from "../src/provider/schema"
 import type { MessageV2 } from "../src/session/message-v2"
@@ -174,6 +174,7 @@ type Runtime = {
   PublicApi: (typeof import("../src/server/routes/instance/httpapi/public"))["PublicApi"]
   ExperimentalHttpApiServer: (typeof import("../src/server/routes/instance/httpapi/server"))["ExperimentalHttpApiServer"]
   Server: (typeof import("../src/server/server"))["Server"]
+  AppRuntime: (typeof import("../src/effect/app-runtime"))["AppRuntime"]
   AppLayer: (typeof import("../src/effect/app-runtime"))["AppLayer"]
   InstanceRef: (typeof import("../src/effect/instance-ref"))["InstanceRef"]
   Instance: (typeof import("../src/project/instance"))["Instance"]
@@ -202,17 +203,18 @@ function runtime() {
     const session = await import("../src/session/session")
     const todo = await import("../src/session/todo")
     const worktree = await import("../src/worktree")
-    const project = await import("../src/project/project")
-    const tui = await import("../src/server/shared/tui-control")
-    const fixture = await import("../test/fixture/fixture")
-    const db = await import("../test/fixture/db")
-    return {
-      PublicApi: publicApi.PublicApi,
-      ExperimentalHttpApiServer: httpApiServer.ExperimentalHttpApiServer,
-      Server: server.Server,
-      AppLayer: appRuntime.AppLayer,
-      InstanceRef: instanceRef.InstanceRef,
-      Instance: instance.Instance,
+      const project = await import("../src/project/project")
+      const tui = await import("../src/server/shared/tui-control")
+      const fixture = await import("../test/fixture/fixture")
+      const db = await import("../test/fixture/db")
+      return {
+        PublicApi: publicApi.PublicApi,
+        ExperimentalHttpApiServer: httpApiServer.ExperimentalHttpApiServer,
+        Server: server.Server,
+        AppRuntime: appRuntime.AppRuntime,
+        AppLayer: appRuntime.AppLayer,
+        InstanceRef: instanceRef.InstanceRef,
+        Instance: instance.Instance,
       InstanceStore: instanceStore.InstanceStore,
       Session: session.Session,
       Todo: todo.Todo,
@@ -1601,8 +1603,12 @@ function withContext<A, E>(scenario: ActiveScenario, use: (ctx: SeededContext<un
               ),
             )
           : undefined
-        const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          effect.pipe(Effect.provideService(modules.InstanceRef, instance), Effect.provide(modules.AppLayer))
+        const run = <A, E>(effect: Effect.Effect<A, E, AppServices>) =>
+          Effect.promise(() =>
+            modules.AppRuntime.runPromise(
+              instance ? effect.pipe(Effect.provideService(modules.InstanceRef, instance)) : effect,
+            ),
+          )
         const directory = () => {
           if (!context.dir?.path) throw new Error("scenario needs a project directory")
           return context.dir.path
@@ -1746,6 +1752,7 @@ function call(backend: Backend, scenario: ActiveScenario, ctx: SeededContext<unk
 }
 
 const appCache: Partial<Record<Backend, BackendApp>> = {}
+const handlerContext = Context.empty() as Context.Context<unknown>
 
 function app(modules: Runtime, backend: Backend) {
   Flag.OPENCODE_EXPERIMENTAL_HTTPAPI = backend === "effect"
@@ -1759,21 +1766,12 @@ function app(modules: Runtime, backend: Backend) {
     })
   }
 
-  const handler = HttpRouter.toWebHandler(
-    modules.ExperimentalHttpApiServer.routes.pipe(
-      Layer.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromUnknown({ OPENCODE_SERVER_PASSWORD: undefined, OPENCODE_SERVER_USERNAME: undefined }),
-        ),
-      ),
-    ),
-    { disableLogger: true },
-  ).handler
+  const handler = modules.ExperimentalHttpApiServer.webHandler()
   return (appCache.effect = {
     request(input: string | URL | Request, init?: RequestInit) {
-      return handler(
+      return handler.handler(
         input instanceof Request ? input : new Request(new URL(input, "http://localhost"), init),
-        modules.ExperimentalHttpApiServer.context,
+        handlerContext,
       )
     },
   })
@@ -2005,10 +2003,12 @@ function indent(value: string) {
     .join("\n")
 }
 
-Effect.runPromise(main.pipe(Effect.provide(TestLLMServer.layer), Effect.scoped)).then(
-  () => process.exit(0),
-  (error: unknown) => {
-    console.error(`${color.red}${message(error)}${color.reset}`)
-    process.exit(1)
-  },
-)
+runtime()
+  .then((modules) => modules.AppRuntime.runPromise(main.pipe(Effect.provide(TestLLMServer.layer), Effect.scoped)))
+  .then(
+    () => process.exit(0),
+    (error: unknown) => {
+      console.error(`${color.red}${message(error)}${color.reset}`)
+      process.exit(1)
+    },
+  )

@@ -114,6 +114,7 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
   applyLegacySchemaOverrides(spec)
   normalizeComponentDescriptions(spec)
   addLegacyErrorSchemas(spec)
+  addLegacyEventSchemas(spec)
   delete spec.components?.schemas?.Unauthorized
   delete spec.components?.schemas?.EffectHttpApiErrorBadRequest
   delete spec.components?.schemas?.EffectHttpApiErrorNotFound
@@ -194,6 +195,21 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
     }
   }
   return input
+}
+
+function addLegacyEventSchemas(spec: OpenApiSpec) {
+  if (!spec.components?.schemas) return
+  const event = {
+    type: "object",
+    required: ["id", "type", "properties"],
+    properties: {
+      id: { type: "string" },
+      type: { type: "string" },
+      properties: { additionalProperties: true },
+    },
+  } satisfies OpenApiSchema
+  spec.components.schemas.Event ??= event
+  spec.components.schemas.GlobalEvent ??= event
 }
 
 function addLegacyErrorSchemas(spec: OpenApiSpec) {

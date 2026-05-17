@@ -2,9 +2,6 @@ import { Project } from "@/project/project"
 import { ProjectID } from "@/project/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../middleware/authorization"
-import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 
 const root = "/project"
@@ -63,10 +60,7 @@ export const ProjectApi = HttpApi.make("project")
           title: "project",
           description: "Experimental HttpApi project routes.",
         }),
-      )
-      .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      ),
   )
   .annotateMerge(
     OpenApi.annotations({

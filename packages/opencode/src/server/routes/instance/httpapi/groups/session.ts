@@ -12,9 +12,6 @@ import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, SchemaGetter, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../middleware/authorization"
-import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { ApiNotFoundError } from "../errors"
 import { described } from "./metadata"
 
@@ -417,10 +414,7 @@ export const SessionApi = HttpApi.make("session")
           title: "session",
           description: "Experimental HttpApi session routes.",
         }),
-      )
-      .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      ),
   )
   .annotateMerge(
     OpenApi.annotations({

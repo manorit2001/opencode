@@ -3,9 +3,6 @@ import { Ripgrep } from "@/file/ripgrep"
 import { LSP } from "@/lsp/lsp"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { Authorization } from "../middleware/authorization"
-import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 
 export const FileQuery = Schema.Struct({
@@ -107,10 +104,7 @@ export const FileApi = HttpApi.make("file")
           title: "file",
           description: "Experimental HttpApi file routes.",
         }),
-      )
-      .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
+      ),
   )
   .annotateMerge(
     OpenApi.annotations({

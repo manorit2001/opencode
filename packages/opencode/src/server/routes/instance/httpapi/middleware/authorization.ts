@@ -84,6 +84,17 @@ function validateRawCredential<A, E, R>(
   return effect
 }
 
+export function authorizeRawRequest<E, R>(
+  effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  request: HttpServerRequest.HttpServerRequest,
+  config: ServerAuth.Info,
+) {
+  const url = new URL(request.url, "http://localhost")
+  if (isPublicUIPath(request.method, url.pathname)) return effect
+  if (hasPtyConnectTicketURL(url)) return effect
+  return credentialFromURL(url, request).pipe(Effect.flatMap((credential) => validateRawCredential(effect, credential, config)))
+}
+
 export const authorizationRouterMiddleware = HttpRouter.middleware()(
   Effect.gen(function* () {
     const config = yield* ServerAuth.Config
@@ -92,12 +103,7 @@ export const authorizationRouterMiddleware = HttpRouter.middleware()(
     return (effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        const url = new URL(request.url, "http://localhost")
-        if (isPublicUIPath(request.method, url.pathname)) return yield* effect
-        if (hasPtyConnectTicketURL(url)) return yield* effect
-        return yield* credentialFromURL(url, request).pipe(
-          Effect.flatMap((credential) => validateRawCredential(effect, credential, config)),
-        )
+        return yield* authorizeRawRequest(effect, request, config)
       })
   }),
 )

@@ -1,4 +1,7 @@
 import { HttpApi } from "effect/unstable/httpapi"
+import { Authorization } from "./middleware/authorization"
+import { InstanceContextMiddleware } from "./middleware/instance-context"
+import { WorkspaceRoutingMiddleware } from "./middleware/workspace-routing"
 import { ConfigApi } from "./groups/config"
 import { ControlApi } from "./groups/control"
 import { EventApi } from "./event"
@@ -36,6 +39,9 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(V2Api)
   .addHttpApi(TuiApi)
   .addHttpApi(WorkspaceApi)
+  .middleware(InstanceContextMiddleware)
+  .middleware(WorkspaceRoutingMiddleware)
+  .middleware(Authorization)
 
 export const OpenCodeHttpApi = HttpApi.make("opencode")
   .addHttpApi(RootHttpApi)

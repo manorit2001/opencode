@@ -48,10 +48,11 @@ import { ConfigMCP } from "@/config/mcp"
 import { Todo } from "@/session/todo"
 import { Result, Schema } from "effect"
 import { LoadAPIKeyError } from "ai"
-import type { AssistantMessage, Event, OpencodeClient, SessionMessageResponse, ToolPart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, OpencodeClient, SessionMessageResponse, ToolPart } from "@opencode-ai/sdk/v2"
 import { applyPatch } from "diff"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { ShellID } from "@/tool/shell/id"
+import type { Event } from "@/sdk/event"
 
 type ModeOption = { id: string; name: string; description?: string }
 type ModelOption = { modelId: string; name: string }
@@ -181,8 +182,9 @@ export class Agent implements ACPAgent {
         if (this.eventAbort.signal.aborted) return
         const payload = event?.payload
         if (!payload) continue
-        await this.handleEvent(payload as Event).catch((error) => {
-          log.error("failed to handle event", { error, type: payload.type })
+        const compat = payload as Event
+        await this.handleEvent(compat).catch((error) => {
+          log.error("failed to handle event", { error, type: compat.type })
         })
       }
     }

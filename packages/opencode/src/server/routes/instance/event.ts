@@ -21,9 +21,15 @@ export const EventRoutes = () =>
           content: {
             "text/event-stream": {
               schema: resolver(
-                z.unknown().meta({
-                  ref: "Event",
-                }),
+                z
+                  .object({
+                    id: z.string(),
+                    type: z.string(),
+                    properties: z.unknown(),
+                  })
+                  .meta({
+                    ref: "Event",
+                  }),
               ),
             },
           },
